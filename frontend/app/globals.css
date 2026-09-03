@@ -1,0 +1,118 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+:root {
+  --background: #f7f7fb;
+  --foreground: #16162a;
+  --surface: #ffffff;
+  --surface-border: #e5e4f5;
+  /* Dual-color brand palette: indigo -> fuchsia, inspired by the Framer AI
+     marketing site's gradient accent on a light, airy background. */
+  --brand-1: #4f46e5;
+  --brand-2: #d946ef;
+  --brand-1-soft: #eef2ff;
+  --brand-2-soft: #fdf4ff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-border: var(--surface-border);
+  --color-brand-1: var(--brand-1);
+  --color-brand-2: var(--brand-2);
+  --color-brand-1-soft: var(--brand-1-soft);
+  --color-brand-2-soft: var(--brand-2-soft);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0b0b16;
+    --foreground: #e9e9f7;
+    --surface: #14141f;
+    --surface-border: #2a2a3d;
+    --brand-1-soft: #1c1a3a;
+    --brand-2-soft: #33193a;
+  }
+}
+
+* {
+  border-color: var(--surface-border);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+  position: relative;
+}
+
+/* Soft, slow-drifting dual-color blobs behind everything - the "high CSS
+   animation" backdrop, kept subtle (low opacity, blurred, no scroll-jank)
+   so it reads as ambient polish rather than a distraction from the report
+   content that's the actual point of the page. */
+.bg-aurora {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.bg-aurora::before,
+.bg-aurora::after {
+  content: "";
+  position: absolute;
+  width: 42rem;
+  height: 42rem;
+  border-radius: 9999px;
+  filter: blur(90px);
+  opacity: 0.35;
+  animation: aurora-drift 22s ease-in-out infinite alternate;
+}
+
+.bg-aurora::before {
+  top: -14rem;
+  left: -10rem;
+  background: radial-gradient(circle at 30% 30%, var(--brand-1), transparent 70%);
+}
+
+.bg-aurora::after {
+  bottom: -16rem;
+  right: -12rem;
+  background: radial-gradient(circle at 70% 70%, var(--brand-2), transparent 70%);
+  animation-delay: -11s;
+}
+
+@keyframes aurora-drift {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(4rem, 3rem) scale(1.15); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bg-aurora::before,
+  .bg-aurora::after {
+    animation: none;
+  }
+}
+
+.gradient-text {
+  background-image: linear-gradient(90deg, var(--brand-1), var(--brand-2));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.glass-card {
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid var(--surface-border);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 1px 2px rgba(16, 15, 45, 0.04), 0 12px 32px -16px rgba(79, 70, 229, 0.18);
+}
+
+.gradient-ring:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-1) 35%, transparent);
+}

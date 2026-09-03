@@ -1,0 +1,34 @@
+[
+  {
+    "id": 601,
+    "name": "Voltway 350W Commuter Electric Scooter",
+    "description": "UL 2272 certified electric scooter with a 350W motor and 36V battery. Weighs 12.7kg.",
+    "short_description": "UL 2272 certified electric scooter.",
+    "sku": "WC-SCT-601",
+    "price": "449.99",
+    "regular_price": "449.99",
+    "stock_status": "instock",
+    "weight": "13.5",
+    "dimensions": {"length": "110", "width": "45", "height": "55"},
+    "categories": [{"id": 12, "name": "Electric Scooters", "slug": "electric-scooters"}],
+    "images": [{"src": "https://store.example.com/wp-content/uploads/scooter-601.jpg"}],
+    "meta_data": [{"key": "_gtin", "value": "00012345678905"}, {"key": "condition", "value": "new"}],
+    "attributes": [{"key": "battery_wh", "value": "396"}]
+  },
+  {
+    "id": 602,
+    "name": "Little Oak Wooden Playhouse",
+    "description": "Wooden outdoor playhouse. Recommended for ages 3-8 years. WARNING: choking hazard, adult supervision required.",
+    "short_description": "Wooden outdoor playhouse.",
+    "sku": "WC-PLH-602",
+    "price": "349.00",
+    "regular_price": "349.00",
+    "stock_status": "instock",
+    "weight": "40",
+    "dimensions": {"length": "180", "width": "150", "height": "140"},
+    "categories": [{"id": 15, "name": "Playhouses", "slug": "playhouses"}],
+    "images": [{"src": "https://store.example.com/wp-content/uploads/playhouse-602.jpg"}],
+    "meta_data": [{"key": "_gtin", "value": "00099988877766"}, {"key": "condition", "value": "new"}],
+    "attributes": []
+  }
+]

@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+.coverage
+htmlcov/
+node_modules/
+.next/
+reports/
+*.db
+validation/validation_set.json
+validation/results/

@@ -1,0 +1,6 @@
+-r requirements.txt
+pytest>=8.2
+pytest-asyncio>=0.23
+respx>=0.21
+pytest-cov>=5.0
+pypdf>=5.0

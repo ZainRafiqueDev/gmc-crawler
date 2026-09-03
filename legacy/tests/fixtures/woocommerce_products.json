@@ -1,0 +1,41 @@
+[
+  {
+    "id": 501,
+    "name": "Voltway 350W Commuter Electric Scooter",
+    "description": "UL 2272 certified electric scooter with a 350W motor and 36V battery.",
+    "short_description": "UL 2272 certified electric scooter.",
+    "sku": "WC-SCT-501",
+    "price": "449.99",
+    "regular_price": "449.99",
+    "stock_status": "instock",
+    "weight": "13.5",
+    "dimensions": {"length": "110", "width": "45", "height": "55"},
+    "categories": [{"id": 12, "name": "Electric Scooters", "slug": "electric-scooters"}],
+    "images": [
+      {"src": "https://store.example.com/wp-content/uploads/scooter-501.jpg"}
+    ],
+    "meta_data": [
+      {"key": "_gtin", "value": "00012345678905"},
+      {"key": "condition", "value": "new"}
+    ],
+    "attributes": [
+      {"key": "battery_wh", "value": "396"}
+    ]
+  },
+  {
+    "id": 502,
+    "name": "Bare Bones Grabber Tool",
+    "description": "",
+    "short_description": "",
+    "sku": "WC-TL-502",
+    "price": "",
+    "regular_price": "",
+    "stock_status": "outofstock",
+    "weight": "",
+    "dimensions": {"length": "", "width": "", "height": ""},
+    "categories": [],
+    "images": [],
+    "meta_data": [],
+    "attributes": []
+  }
+]
