@@ -61,6 +61,16 @@ def test_domain_min_delay_clamped_to_a_sane_range():
     assert Settings(crawl_domain_min_delay_seconds=1.5).crawl_domain_min_delay_seconds == 1.5
 
 
+def test_challenge_wait_seconds_clamped_to_a_sane_range():
+    # Found live: a real store's bot-protection interstitial took longer to
+    # resolve than PageFetcher's old hardcoded 6s default, producing a false
+    # bot_blocked failure against a site that was actually reachable.
+    assert Settings(crawl_challenge_wait_seconds=0).crawl_challenge_wait_seconds == 1.0
+    assert Settings(crawl_challenge_wait_seconds=999).crawl_challenge_wait_seconds == 30.0
+    assert Settings(crawl_challenge_wait_seconds=12.0).crawl_challenge_wait_seconds == 12.0
+    assert Settings().crawl_challenge_wait_seconds == 10.0
+
+
 # --- crawl_extra_headers (purchase-journey validation follow-up) ----------
 
 def test_crawl_extra_headers_empty_string_parses_to_empty_dict():

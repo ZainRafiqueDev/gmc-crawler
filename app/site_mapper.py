@@ -4,6 +4,7 @@ internal URL found into a PageType. Depth/page-count capped via Settings.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import re
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -302,6 +303,7 @@ async def _map_site(base_url: str, browser: Browser, settings: Settings, proxy_r
     fetcher = PageFetcher(
         browser, max_attempts=3, domain_min_delay_seconds=settings.crawl_domain_min_delay_seconds,
         proxy_rotator=proxy_rotator, extra_headers=settings.crawl_extra_headers_dict or None,
+        challenge_wait_seconds=settings.crawl_challenge_wait_seconds,
     )
     home_norm = _normalize(base_url)
     home_netloc = _root_netloc(urlparse(home_norm).netloc)
@@ -431,6 +433,21 @@ async def _map_site(base_url: str, browser: Browser, settings: Settings, proxy_r
 
         next_depth = (wave[0][1] + 1) if wave else 1
         next_wave: list[tuple[str, int, str | None]] = []
+        # Round-robin across this batch's pages (1st child of every page,
+        # then 2nd child of every page, ...) rather than appending each
+        # page's full child list before moving to the next page. A later
+        # truncation (wave[:room], next loop iteration, when the combined
+        # next_wave exceeds the remaining page budget) always cuts from the
+        # front - sequential appending meant whichever page happened to be
+        # first in this batch got its entire child list through before any
+        # other page got a single child in, regardless of per-category caps
+        # (which only govern *whether* a URL is enqueued at all, not where
+        # it lands in next_wave). Found live on a real 111-category store:
+        # one category (of ~111) supplied 10 of the only 26 product pages
+        # the whole crawl found, while roughly 100 others contributed zero -
+        # not because any category was anywhere near its own cap, but
+        # because its collection page simply wasn't first in this loop.
+        per_page_children: list[list[tuple[str, int, str | None]]] = []
         for (_url, _depth, cat_key), page in zip(wave, batch):
             if page.depth >= settings.crawl_max_depth:
                 continue
@@ -443,8 +460,13 @@ async def _map_site(base_url: str, browser: Browser, settings: Settings, proxy_r
             # "related products" links stay attributed to the same category
             # rather than escaping the cap entirely.
             child_category_key = _normalize(page.url) if page.page_type == PageType.COLLECTION else cat_key
-            for link in page.internal_links:
-                _enqueue_if_allowed(_normalize(link), page.depth + 1, child_category_key, next_wave)
+            per_page_children.append([(link, page.depth + 1, child_category_key) for link in page.internal_links])
+        for round_ in itertools.zip_longest(*per_page_children):
+            for entry in round_:
+                if entry is None:
+                    continue
+                link, child_depth, child_category_key = entry
+                _enqueue_if_allowed(_normalize(link), child_depth, child_category_key, next_wave)
 
         if not sitemap_injected:
             sitemap_injected = True

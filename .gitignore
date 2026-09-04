@@ -8,6 +8,7 @@ htmlcov/
 node_modules/
 .next/
 reports/
+reports_validation/
 *.db
 validation/validation_set.json
 validation/results/

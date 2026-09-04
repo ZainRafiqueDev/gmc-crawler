@@ -72,6 +72,19 @@ class Settings(BaseSettings):
     # callers stay fast - this is the real value wired up by app.site_mapper.
     crawl_domain_min_delay_seconds: float = 0.5
 
+    # How long PageFetcher waits for a Cloudflare/DDoS-Guard-style JS
+    # interstitial to resolve before giving up on that attempt (see
+    # PageFetcher._wait_for_challenge_to_resolve). PageFetcher's own class
+    # default is 6.0s and was never wired to a setting until this was found
+    # live: a real store's interstitial (vellano.site, "please wait up to 5
+    # seconds") took closer to ~7-10s to clear in a real browser tab, longer
+    # than PageFetcher's 6s allowance, so every attempt failed as bot_blocked
+    # even though the site was live and reachable by a real browser session.
+    # 10.0s gives real, slightly-slower challenges more room without adding
+    # much latency to genuinely-blocked pages, which are already capped well
+    # below max_attempts by the block-repeat-cap logic in PageFetcher.
+    crawl_challenge_wait_seconds: float = 10.0
+
     report_output_dir: Path = Path("./reports")
 
     database_url: str = "sqlite+aiosqlite:///./gmc_monitor.db"
@@ -172,6 +185,11 @@ class Settings(BaseSettings):
     @classmethod
     def _clamp_domain_min_delay(cls, v: float) -> float:
         return max(0.0, min(v, 30.0))
+
+    @field_validator("crawl_challenge_wait_seconds")
+    @classmethod
+    def _clamp_challenge_wait(cls, v: float) -> float:
+        return max(1.0, min(v, 30.0))
 
     @field_validator("llm_product_sample_cap")
     @classmethod

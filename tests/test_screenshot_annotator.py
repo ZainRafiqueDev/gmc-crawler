@@ -107,6 +107,7 @@ def _make_browser(evaluate_return, screenshot_bytes=None):
     context.close = AsyncMock()
     page = MagicMock()
     page.goto = AsyncMock()
+    page.wait_for_load_state = AsyncMock()
     page.evaluate = AsyncMock(return_value=evaluate_return)
     page.screenshot = AsyncMock(return_value=screenshot_bytes or _png_bytes())
     page.viewport_size = {"width": 1366, "height": 768}
@@ -142,6 +143,31 @@ async def test_eligible_finding_gets_screenshot_path_when_quote_is_located(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_clip_height_is_clamped_to_the_viewport_like_width_already_is(tmp_path):
+    """Found live on leafloop.site: the matched element for a real quote was
+    tall enough that its box extended below the 768px viewport (scrollIntoView
+    centers, it doesn't guarantee the whole element fits), and clip["height"]
+    was computed as min(box_height + margin, box_height + margin) - both
+    sides of that min were literally the same expression, so height was never
+    actually clamped the way width already was against viewport width. The
+    unclamped clip then extended past the real screenshot surface and
+    Playwright's page.screenshot(clip=...) raised "Clipped area is either
+    empty or outside the resulting image", silently losing the screenshot for
+    a real, correctly-located suspension-risk finding.
+    """
+    box = {"x": 10, "y": 700, "width": 200, "height": 300}  # y + height = 1000, well past viewport height 768
+    browser, context, page = _make_browser(evaluate_return=box)
+    findings = [_finding()]
+
+    result = await capture_annotated_screenshots(browser, findings, Settings(), tmp_path, filename_prefix="shop-example")
+
+    page.screenshot.assert_awaited_once()
+    clip = page.screenshot.await_args.kwargs["clip"]
+    assert clip["height"] <= 768 - clip["y"]
+    assert result[0].screenshot_path is not None
+
+
+@pytest.mark.asyncio
 async def test_quote_not_found_leaves_screenshot_path_none(tmp_path):
     browser, context, page = _make_browser(evaluate_return=None)
     findings = [_finding()]
@@ -173,6 +199,24 @@ async def test_multiple_findings_on_same_page_share_one_visit(tmp_path):
 
     browser.new_context.assert_awaited_once()  # one page, one visit, regardless of finding count
     assert all(f.screenshot_path is not None for f in result)
+
+
+@pytest.mark.asyncio
+async def test_networkidle_timeout_on_second_visit_degrades_to_domcontentloaded_snapshot(tmp_path):
+    """Mirrors PageFetcher's own networkidle-with-bounded-fallback pattern -
+    a page that never goes network-idle (background analytics, polling)
+    must not block or fail the screenshot; it just proceeds with whatever
+    the DOM looked like after wait_for_load_state's own timeout."""
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    box = {"x": 0, "y": 0, "width": 50, "height": 20}
+    browser, context, page = _make_browser(evaluate_return=box)
+    page.wait_for_load_state = AsyncMock(side_effect=PlaywrightTimeoutError("networkidle timed out"))
+    findings = [_finding()]
+
+    result = await capture_annotated_screenshots(browser, findings, Settings(), tmp_path, filename_prefix="shop-example")
+
+    assert result[0].screenshot_path is not None
 
 
 @pytest.mark.asyncio

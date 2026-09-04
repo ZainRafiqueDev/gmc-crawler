@@ -30,7 +30,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from PIL import Image
-from playwright.async_api import Browser
+from playwright.async_api import Browser, TimeoutError as PlaywrightTimeoutError
 
 from app.config import Settings
 from app.fetch import BROWSER_USER_AGENT, STEALTH_INIT_SCRIPT, STEALTH_VIEWPORT
@@ -41,6 +41,7 @@ from app.security.ssrf_guard import install_ssrf_guard
 logger = logging.getLogger("gmc_audit.checks.screenshot_annotator")
 
 _NAV_TIMEOUT_MS = 20_000
+_SETTLE_TIMEOUT_MS = 5_000
 _CROP_MARGIN_PX = 40
 _MAX_SCREENSHOT_WIDTH_PX = 1200
 _JPEG_QUALITY = 82
@@ -58,6 +59,20 @@ _QUOTE_RE = re.compile(r'"([^"]{8,})"')
 # box in page coordinates. Prefers a leaf-ish element (no children) first so
 # the highlight/crop is as tight as possible; falls back to the smallest
 # matching element of any kind if no leaf matches.
+#
+# scrollIntoView() only *requests* a scroll; plain (no-`behavior`) calls
+# inherit the page's CSS `scroll-behavior`, and a `scroll-behavior: smooth`
+# page (found live - a common modern WordPress/Elementor theme default)
+# animates the scroll over ~800ms instead of applying it immediately, so
+# reading getBoundingClientRect() right after - even after a couple of
+# animation frames - still returns the element's pre-scroll position (found
+# live: a box hundreds of pixels below the viewport for an element
+# scrollIntoView({block:"center"}) should have centered, on a page confirmed
+# to contain the quote verbatim - the search itself worked, but the returned
+# coordinates were mid-animation/stale). Explicitly passing
+# behavior:"instant" overrides the page's CSS default for this one call and
+# applies synchronously, confirmed live against the exact page/quote that
+# exposed this - no arbitrary sleep needed.
 _FIND_QUOTE_JS = """
 (quote) => {
     const norm = s => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
@@ -81,7 +96,7 @@ _FIND_QUOTE_JS = """
     best.style.outline = "4px solid #dc2626";
     best.style.outlineOffset = "2px";
     best.style.boxShadow = "0 0 0 4px rgba(220, 38, 38, 0.25)";
-    best.scrollIntoView({block: "center", inline: "center"});
+    best.scrollIntoView({block: "center", inline: "center", behavior: "instant"});
     const rect = best.getBoundingClientRect();
     return {x: rect.x, y: rect.y, width: rect.width, height: rect.height};
 }
@@ -138,7 +153,7 @@ async def _capture_one(page, quotes: list[str], out_path: Path) -> bool:
             "y": max(0, box["y"] - _CROP_MARGIN_PX),
         }
         clip["width"] = min(box["width"] + 2 * _CROP_MARGIN_PX, viewport["width"] - clip["x"])
-        clip["height"] = min(box["height"] + 2 * _CROP_MARGIN_PX, box["height"] + 2 * _CROP_MARGIN_PX)
+        clip["height"] = min(box["height"] + 2 * _CROP_MARGIN_PX, viewport["height"] - clip["y"])
         if clip["width"] <= 0 or clip["height"] <= 0:
             continue
 
@@ -197,6 +212,21 @@ async def capture_annotated_screenshots(
             except Exception as exc:  # noqa: BLE001 - a failed second visit just means no screenshots for this page's findings, not an audit failure
                 logger.warning("Screenshot second-visit failed for %s: %s", page_url, exc)
                 continue
+
+            # Found live: this quote-location step (getBoundingClientRect
+            # right after domcontentloaded) intermittently missed a quote
+            # later confirmed to be verbatim on the page - late webfont/
+            # image-driven reflow can still shift element positions (and even
+            # what a "smallest matching element" resolves to) for a moment
+            # after domcontentloaded fires. PageFetcher already waits for
+            # networkidle-with-a-bounded-fallback for exactly this reason
+            # (see PageFetcher._map... nav flow in app/fetch.py); this second,
+            # lightweight visit had none of that. Bounded and falls back to
+            # the domcontentloaded snapshot on timeout, same as PageFetcher.
+            try:
+                await page.wait_for_load_state("networkidle", timeout=_SETTLE_TIMEOUT_MS)
+            except PlaywrightTimeoutError:
+                logger.debug("networkidle timed out for screenshot second-visit to %s - using domcontentloaded snapshot", page_url)
 
             for i, f in enumerate(page_findings):
                 quotes = _candidate_quotes(f.evidence)

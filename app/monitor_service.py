@@ -189,7 +189,7 @@ class MonitorService:
             logger.error("run_cheap_check: store %d not found", store_id)
             return False
 
-        fetcher = PageFetcher(self.browser, max_attempts=3)
+        fetcher = PageFetcher(self.browser, max_attempts=3, challenge_wait_seconds=self.settings.crawl_challenge_wait_seconds)
         result = await fetcher.fetch(store.url)
         if not result.ok:
             logger.warning("Cheap check fetch failed for store %d (%s): %s", store_id, store.url, result.error)

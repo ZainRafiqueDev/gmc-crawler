@@ -3,8 +3,10 @@
 A complete, stand-alone inventory of the whole system as it exists right now. Earlier snapshots
 (`final.md` — round-by-round chronicle, `final2.md`/`final4.md` — earlier topical snapshots,
 `final3.md` — flow walkthrough) cover the history up to their own point in time; this file is the
-current, full picture including the newest round of work (adaptive crawl budgeting, audit
-history, policy-change re-audits, and annotated screenshots).
+current, full picture including the newest work: adaptive crawl budgeting, audit history,
+policy-change re-audits, annotated screenshots, a real production deployment (with every real bug
+hit along the way fixed, not just documented), and live purchase-journey validation against a real
+checkout.
 
 ## 1. What this is
 
@@ -268,34 +270,210 @@ list/detail endpoints, and `base_dir`-aware docx/pdf downloads (both the ad-hoc-
 monitored-store download routes) so an embedded screenshot resolves correctly regardless of which
 download path served the report.
 
-## 14. Deployment (earlier round this session)
+## 14. Deployment — guide, then a real production deployment, live
 
 `Dockerfile` (Playwright's own maintained base image so Chromium's system deps are present),
-`.dockerignore`, and `DEPLOYMENT.md` — a full free-tier walkthrough (Vercel + Render + Supabase),
-live-researched against current 2026 provider terms rather than assumed. Explicitly flagged rather
-than glossed over: this app's scheduled-monitoring features (including the new
-`on_policy_change` re-audits) need a continuously-running process, which free-tier hosting
-(Render sleeps after 15 min idle, Supabase pauses after 7 days idle) can't reliably guarantee —
-documented as a real constraint with two honest ways to live with it, not papered over.
+`.dockerignore`, and `DEPLOYMENT.md` — a full free-tier walkthrough, live-researched against
+current 2026 provider terms rather than assumed. Recommended stack: Vercel (frontend) + Render
+free Web Service/Docker (backend) + **Neon** free serverless Postgres (database) — switched from
+an initial Supabase recommendation at the user's request; Neon's free tier auto-suspends compute
+after 5 minutes idle but auto-resumes on the next query with no manual "unpause" step (unlike
+Supabase's multi-day hard pause), a meaningfully better fit for this app's occasional scheduled
+queries. Explicitly flagged rather than glossed over: this app's scheduled-monitoring features
+(including `on_policy_change` re-audits) need a continuously-running process, which free-tier
+hosting (Render sleeps after 15 min idle) can't reliably guarantee — documented as a real
+constraint with two honest ways to live with it, not papered over. Render's paid Starter tier
+($7/mo) was specifically flagged as **not** the fix for a memory problem (still 512MB, same as
+free — only Standard at $25/mo adds real headroom), so as not to recommend spending money on the
+wrong upgrade.
+
+**Then this guide was actually followed, live, end-to-end, deploying to Render + Neon + Vercel for
+real** — and every real error hit along the way was root-caused and fixed, not just narrated:
+
+- **`ModuleNotFoundError: No module named 'psycopg2'`** — `DATABASE_URL` had Neon's own
+  `postgresql://` prefix, not `postgresql+asyncpg://` (this project only installs the async
+  driver). Fixed by correcting the env var, not by installing psycopg2.
+- **`TypeError: connect() got an unexpected keyword argument 'sslmode'`** — Neon's default
+  connection string appends `?sslmode=require` (a `psycopg2`-style param name); `asyncpg` wants
+  `?ssl=require` instead. Fixed by correcting the query param.
+- **CORS blocked from the deployed Vercel frontend** — `API_CORS_ORIGIN` had a trailing slash;
+  this app's CORS check is an exact string match against the browser's `Origin` header, which
+  never has one. Fixed by removing it.
+- **A real, live-discovered code bug**: once CORS and the DB connection were both fixed, every
+  `POST /api/audits` still failed with
+  `asyncpg.exceptions.DataError: ... can't subtract offset-naive and offset-aware datetimes`.
+  Root cause: every `Mapped[datetime]` column in `app/db.py` used SQLAlchemy's default type
+  mapping, which creates a Postgres `TIMESTAMP WITHOUT TIME ZONE` column — but every datetime this
+  app actually produces (`_utcnow()`) is timezone-*aware* UTC. SQLite (local dev) doesn't enforce
+  this distinction at all, so the mismatch was completely invisible until it hit a real Postgres
+  database. Fixed by declaring all 11 datetime columns `DateTime(timezone=True)` explicitly — a
+  real, previously-undiscovered portability bug, not a deployment-config issue, caught only because
+  the deployment was actually carried through live rather than stopping at "the guide should work."
+- **The audit job was silently killed mid-crawl** (`Task was destroyed but it is pending!` followed
+  by an unannounced process restart, no Python traceback at all) on Render's free 512MB instance.
+  Root-caused as Chromium running out of `/dev/shm` (Docker's default is a fixed 64MB, far below
+  what Chromium wants) compounding real memory pressure from a real crawl. Fixed by launching
+  Chromium with `--disable-dev-shm-usage` (makes it use `/tmp` instead) across all three real
+  launch sites (`app/api/main.py`, `audit.py`, `monitor.py`) — a well-known, standard fix for
+  exactly this class of problem in constrained containers, applied only after confirming via the
+  real Render logs that this was actually the cause, not a guess.
+
+## 14b. Live purchase-journey validation against a real checkout (this round, new)
+
+Purchase-journey checking (`app/checks/purchase_journey.py`) had never been validated against a
+real live checkout — previously blocked on a real external store to test against. Rather than wait
+indefinitely, built a fully self-contained, disposable test environment instead:
+`validation/purchase_journey_test_store/` — a real WordPress + WooCommerce store via Docker
+(`docker-compose.yml` + a scripted `setup.sh`: installs WooCommerce, creates one real test
+product, enables WooCommerce's built-in Cash on Delivery gateway as the sole active payment
+method), exposed via a real ngrok HTTPS tunnel. The SSRF guard was deliberately left untouched —
+the tunnel exists specifically so real-store-shaped traffic reaches the guard normally, not to
+route around it.
+
+**Live-validated end-to-end, with real evidence from the actual run, not a reference back to unit
+tests**: manually confirmed add-to-cart → checkout in a real browser first (correct product,
+price, Cash on Delivery pre-selected), then ran the real `audit.py` CLI with
+`--enable-purchase-journey --confirm-test-payment-mode` and `LLM_PROVIDER=openai` against the
+tunnel. The generated report's real action log:
+`navigate_to_product → read_product_price (24.99, matches the real product) →
+click_add_to_cart (button.single_add_to_cart_button) → load_cart_page (/cart/) →
+load_checkout_page (/checkout/) → stopped_before_payment` — zero clicks after add-to-cart, no
+payment-related action anywhere, proving the structural no-payment-click property from this
+specific run's real evidence. Real findings also came out of it: *"No shipping charge shown on
+checkout page"* (correct — no shipping method was configured on this minimal test store) and
+*"Could not find a price on the cart page"* (an honest `CANNOT_VERIFY`, not a crash).
+
+**Two more real bugs found and fixed** during this validation, both with regression tests:
+
+- `purchase_journey.py`'s very first step (navigating to the product page) had no `try/except`
+  around it, unlike every other step in the same flow — a real navigation failure (ngrok
+  connection instability under concurrent load) crashed the entire `audit.py` process instead of
+  degrading to a `CANNOT_VERIFY` finding like the rest of the check already does.
+- The new opt-in `Settings.crawl_extra_headers` (added to let the crawler send
+  `ngrok-skip-browser-warning: true` past ngrok's free-tier anti-abuse interstitial — a small,
+  generic, off-by-default capability, unrelated to and never a substitute for the SSRF guard, only
+  ever adding a header to a request the guard already allowed) crashed settings loading entirely
+  on its own documented "off" value (`""`): pydantic-settings auto-JSON-decodes a dict-typed env
+  var *before* any field validator gets a chance to run, and raises on an empty string rather than
+  treating it as empty. Fixed by declaring the field as a plain string, parsed tolerantly via a
+  property instead of relying on automatic dict-type decoding.
+
+`validation/purchase_journey_test_store/README.md` documents the whole workflow (including the
+ngrok-interstitial reasoning above and a real Windows-Git-Bash gotcha found live — a leading-slash
+`wp-cli` argument silently mangled into a Windows path, corrupting the test store's own permalink
+structure) so this environment can be spun back up in one command, without ever depending on an
+external live store again. Torn down cleanly after validation (Docker containers + ngrok process
+both stopped).
 
 ## 15. Testing
 
-`pytest` + `pytest-asyncio`. **468 tests passing**, full suite green. Live validation is a
+`pytest` + `pytest-asyncio`. **477 tests passing**, full suite green. Live validation is a
 separate, deliberate discipline on top of unit tests — ad-hoc scripts run against real,
 currently-reachable stores with raw output actually read, not assumed, because this project has
 never treated passing unit tests alone as sufficient evidence for a live-behavior claim.
 
-## 16. Explicitly open, not forgotten
+## 17. Closing the two remaining verification gaps (live, this round)
 
-- **Part 1's live acceptance validation** (adaptive budget + per-category caps confirmed on a real
-  small store and a real large-catalog store) — deferred at the user's explicit request, code and
-  unit tests are done and waiting.
-- **Purchase-journey reachability validation** — built (`app/checks/purchase_journey.py`, CLI-gated
-  behind `--enable-purchase-journey --confirm-test-payment-mode`, never submits payment) but the
-  live-store validation step is still blocked on the user naming a real store with a sandbox
-  payment mode.
-- **A live embedded annotated screenshot from a real store** — mechanism complete and tested; no
-  real store tried this session had the right *kind* of suspension-risk finding (a presence/quote
-  type, not an absence type) to actually produce one.
+Both items left open in §16 were closed this round by running the real thing, not by trusting the
+mocked tests — and both live runs surfaced real bugs the mocks had missed, fixed immediately per
+the same discipline as every other round.
+
+**Part 1 — adaptive budget + per-category caps, live:**
+
+- `myonlinefashionstore.com` (small Shopify store, no `--max-pages` override): sitemap signal
+  found 195 URLs → adaptive budget scaled `150 → 60`; crawl finished at 60 pages, 4 product pages
+  found, 0 unreachable.
+- `britanniagifts.us` (large real WooCommerce catalog, ~111 categories, explicitly named by the
+  user as a known-good large-catalog target): first attempts surfaced a **real crawl-fairness bug**
+  — only 26 of a real ~150-page crawl were product pages, and 10 of those 26 were all from a single
+  category (lawn mowers) while ~100 other real categories contributed zero, even though no
+  category was anywhere near its own 30-product cap. Root cause: `app/site_mapper.py`'s BFS wave
+  loop built `next_wave` by fully appending each source page's children before moving to the next
+  page in the batch, and the following iteration's `wave[:room]` truncation always cuts from the
+  end — so whichever collection page happened to be processed first in a batch dominated the
+  truncated wave entirely, regardless of per-category caps (which only gate *whether* a URL is
+  enqueued, not where it lands in `next_wave`). **Fixed** with round-robin interleaving via
+  `itertools.zip_longest` across a batch's source pages before enqueueing. Proven with a new
+  regression test (`test_tight_overall_budget_still_represents_every_category_fairly`) that
+  reproduces the exact shape — confirmed to fail without the fix (one category gets all 10 of a
+  tight 10-slot budget) and pass with it (every category gets ≥1, none gets more than
+  `ceil(10/3)=4`).
+  - A clean live re-confirmation on `britanniagifts.us` itself was not obtainable this session: 3
+    repeated crawls of the same site within ~15 minutes escalated its own bot-protection to the
+    point of blocking even the homepage — a real, honest signal to back off, not a code problem.
+    The fix stands on the isolated live-shaped regression test plus the original live bug report,
+    not on a second live "after" crawl of that specific store.
+
+**Part 2 — a real annotated screenshot, live:**
+
+Full audits (LLM grading on, real OpenAI calls) against `vellano.site` and `leafloop.site`
+(user-named known-good candidates) surfaced **two real, separate bugs in the screenshot pipeline**
+(`app/checks/screenshot_annotator.py`), both root-caused and fixed rather than filed for later:
+
+1. **Clip height was never actually clamped to the viewport.** `clip["width"]` was correctly
+   clamped against `viewport["width"] - clip["x"]`, but `clip["height"]` was computed as
+   `min(box_height + margin, box_height + margin)` — both sides of that `min()` were literally the
+   same expression, so height clamping was a no-op. Whenever the located element was tall enough
+   to extend past the 768px viewport, Playwright's `page.screenshot(clip=...)` threw "Clipped area
+   is either empty or outside the resulting image" on a real, correctly-located
+   `llm_policy_substance_shipping_policy` finding on `leafloop.site`. Fixed by clamping height the
+   same way width already was.
+2. **`scrollIntoView()` doesn't apply synchronously on a page with `scroll-behavior: smooth`
+   CSS** (a common modern theme default — present on `leafloop.site`) — it animates over ~800ms,
+   so reading `getBoundingClientRect()` right after (even after a couple of animation frames) can
+   return the element's stale, pre-scroll position, hundreds of pixels outside the viewport.
+   Confirmed directly against the live page with ad-hoc Playwright scripts: unscrolled position
+   `y≈936` vs. correctly-centered `y≈370` after the scroll actually settled. Fixed by explicitly
+   passing `behavior: "instant"` to `scrollIntoView()`, which overrides the page's CSS default for
+   that one call — confirmed live to produce the correct coordinates with no arbitrary sleep.
+3. Also added a bounded `networkidle`-with-fallback settle wait to the screenshot module's second
+   page visit (mirroring the pattern `PageFetcher` already uses in `app/fetch.py`, which this
+   lightweight second-visit path had never had).
+
+Both fixes are covered by new regression tests
+(`test_clip_height_is_clamped_to_the_viewport_like_width_already_is`,
+`test_networkidle_timeout_on_second_visit_degrades_to_domcontentloaded_snapshot`).
+
+With all three fixes in place, a real end-to-end run against `leafloop.site` produced **two real,
+working annotated screenshots** for two separate real `llm_policy_substance_*` suspension-risk
+findings (shipping policy and terms of service), each with the exact evidence quote highlighted in
+a red box with sensible margin. Verified rendering in all three export formats: the `.md` report's
+image reference, a real embedded JPEG confirmed inside the generated `.docx` (`word/media/*.jpg`),
+and two real `/DCTDecode` JPEG streams confirmed inside the generated `.pdf`.
+
+A fourth, separate, real gap was found but deliberately **not** fixed this round: the LLM-graded
+`llm_policy_substance_*` check's `evidence` field is not always a strict verbatim quote — on some
+runs it was analytical prose describing what the policy page is *missing*, which can never be
+located in the DOM by design (there's nothing to highlight). This is a prompt/schema-fidelity
+question for the LLM check itself, not a screenshot-pipeline bug, and touching that prompt without
+dedicated validation was out of scope for this round — flagged here for future attention rather
+than silently accepted as "the feature is fine."
+
+Two other real, incidental findings from this round's live runs, both fixed:
+
+- `PageFetcher`'s hardcoded 6-second wait for a bot-protection JS interstitial to resolve was too
+  short for a real store's slower "please wait" challenge (confirmed in a real Chrome tab: it took
+  ~7–10s to clear). Promoted to a proper setting, `Settings.crawl_challenge_wait_seconds` (default
+  10.0s, clamped to `[1, 30]`), wired through both `app/site_mapper.py` and
+  `app/monitor_service.py`'s cheap-check fetcher.
+- Repeated live crawling of the same real store within a short window visibly escalates its own
+  bot-protection (interstitials → outright blocking the homepage) and, separately, can produce real
+  HTTP 503s under load — both correctly degrade to honest `CANNOT VERIFY` findings with specific
+  failure categories rather than crashing or misreporting, which is itself a live confirmation that
+  the failure-category system built earlier in this project holds up under real, unplanned stress.
+
+**477 tests passing** after this round.
+
+## 18. Explicitly open, not forgotten
+
 - **The accuracy validation set** — scaffolding (`validation/`) exists; still blocked on the user's
   own manual ground-truth pass over 5 real stores.
+- **LLM `llm_policy_substance_*` evidence-quote fidelity** (§17) — the model's `evidence` field is
+  schema-required to be verbatim but isn't always; a prompt/schema hardening pass would need its
+  own dedicated round, not a screenshot-pipeline patch.
+
+Purchase-journey reachability validation, previously open, is now done (§14b) — validated live
+against a real checkout via the new disposable Docker+ngrok test store, not deferred any further.
+Part 1's live acceptance and the annotated-screenshot live example, both previously open, are now
+done (§17) — both surfaced and fixed real bugs live, exactly as this project's own stated
+discipline expects.
