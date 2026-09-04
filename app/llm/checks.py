@@ -14,6 +14,7 @@ the absence of findings against it.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import math
 import re
@@ -202,6 +203,68 @@ _COUNTERFEIT_GUIDANCE = (
 )
 
 
+_WHITESPACE_RE = re.compile(r"\s+")
+_NOTE_EVIDENCE_NOT_VERIFIED = "Evidence quote could not be independently verified as exact page text."
+
+
+def _normalize_for_quote_match(text: str) -> str:
+    """Whitespace-collapsed, HTML-entity-decoded, case-folded - permissive
+    enough that a genuinely real quote (which can differ from the raw page
+    text only in whitespace or entity encoding) still verifies, while text
+    that was actually invented/paraphrased still won't match. The page text
+    an LLM-graded check is shown (CrawledPage.main_content_text/.text) is
+    already de-boilerplated plain text, not raw HTML, so entity-decoding is
+    a defensive extra rather than the primary need here - whitespace
+    collapsing and case-folding do most of the real work.
+    """
+    text = html.unescape(text)
+    text = _WHITESPACE_RE.sub(" ", text)
+    return text.strip().lower()
+
+
+def verify_evidence_quote(quote: str | None, source_text: str) -> bool:
+    """True if `quote` is a real (normalization-tolerant) substring of
+    `source_text` - the same text the check actually gave the model to
+    grade - confirming the forced-schema "verbatim quote" requirement
+    actually held for this specific finding's content, not just its shape.
+    An empty/blank quote verifies trivially (True): a check whose
+    evidence_quote came back empty and fell back to its own reasoning text
+    (a legitimate, schema-allowed case - see e.g. check_policy_page_substance)
+    makes no verbatim claim, so there is nothing to falsify. False means a
+    genuine content-fidelity gap: the model's quote could not be located in
+    what it was actually shown, e.g. analytical prose describing what a
+    page is missing rather than a real quote from it (found live this
+    round, on a real check_policy_page_substance result).
+
+    Deliberately in-memory, not a live-DOM search like
+    app.checks.screenshot_annotator's - this only needs to confirm the
+    quote is real text within the *already-available* prompt-time page
+    text, not find a renderable element to highlight/screenshot (a
+    different job with a real live-browser dependency this one doesn't
+    need).
+    """
+    quote = (quote or "").strip()
+    if not quote:
+        return True
+    return _normalize_for_quote_match(quote) in _normalize_for_quote_match(source_text)
+
+
+def _confidence_after_verification(model_confidence: Confidence, verified: bool) -> Confidence:
+    """A quote that failed verification can never stand as CONFIRMED - the
+    anti-hallucination guarantee it was supposed to rest on didn't hold for
+    this specific finding. Downgrades to POTENTIAL_RISK (still reported,
+    per this project's never-silently-discard pattern - see Finding.
+    evidence_verified's docstring) rather than CANNOT_VERIFY, since the
+    underlying judgment (meets_requirement/has_quality_issue/etc.) still
+    came from a real model call that saw the real page text - only the
+    verbatim-quote guarantee specifically is in question, not the whole
+    verdict. Already-POTENTIAL_RISK stays as-is (nothing to downgrade to).
+    """
+    if not verified and model_confidence == Confidence.CONFIRMED:
+        return Confidence.POTENTIAL_RISK
+    return model_confidence
+
+
 def _policy_reference(ctx) -> str:
     """A finding's policy_reference: includes real source-URL citations
     when the RAG index actually produced a hit, so a reader can go verify
@@ -264,19 +327,24 @@ async def check_policy_page_substance(
     if result.get("meets_requirement"):
         return None
 
+    evidence_quote = result.get("evidence_quote") or ""
+    verified = verify_evidence_quote(evidence_quote, page_text)
+    model_confidence = Confidence.CONFIRMED if result.get("confidence") == "confirmed" else Confidence.POTENTIAL_RISK
+
     return Finding(
         check_id=f"llm_policy_substance_{policy_id}",
         title=f"{ctx.title} page lacks required substance",
         severity=Severity.HIGH,
-        confidence=Confidence.CONFIRMED if result.get("confidence") == "confirmed" else Confidence.POTENTIAL_RISK,
+        confidence=_confidence_after_verification(model_confidence, verified),
         page_url=page.url,
-        evidence=result.get("evidence_quote") or result.get("reasoning", "(no evidence returned)"),
+        evidence=evidence_quote or result.get("reasoning", "(no evidence returned)"),
         policy_reference=policy_reference,
         policy_requirement_text=_requirement_excerpt(ctx),
         policy_last_verified=ctx.verified_at,
         recommended_fix=result.get("recommended_fix"),
         location=result.get("location"),
         from_cache=result.get("_from_cache", False),
+        evidence_verified=verified,
     )
 
 
@@ -314,19 +382,24 @@ async def check_editorial_quality(
     if not result.get("has_quality_issue"):
         return None
 
+    evidence_quote = result.get("evidence_quote") or ""
+    verified = verify_evidence_quote(evidence_quote, page_text)
+    model_confidence = Confidence.CONFIRMED if result.get("confidence") == "confirmed" else Confidence.POTENTIAL_RISK
+
     return Finding(
         check_id="llm_editorial_quality",
         title="Editorial/professional quality issue found",
         severity=Severity.MEDIUM,
-        confidence=Confidence.CONFIRMED if result.get("confidence") == "confirmed" else Confidence.POTENTIAL_RISK,
+        confidence=_confidence_after_verification(model_confidence, verified),
         page_url=page.url,
-        evidence=result.get("evidence_quote") or result.get("issue_description", "(no evidence returned)"),
+        evidence=evidence_quote or result.get("issue_description", "(no evidence returned)"),
         policy_reference=policy_reference,
         policy_requirement_text=_requirement_excerpt(ctx),
         policy_last_verified=ctx.verified_at,
         recommended_fix=result.get("recommended_fix"),
         location=result.get("location"),
         from_cache=result.get("_from_cache", False),
+        evidence_verified=verified,
     )
 
 
@@ -367,19 +440,24 @@ async def check_prohibited_content(
         return None
 
     category = result.get("matched_category") or "unspecified category"
+    evidence_quote = result.get("evidence_quote") or ""
+    verified = verify_evidence_quote(evidence_quote, page_text)
+    model_confidence = Confidence.CONFIRMED if result.get("confidence") == "confirmed" else Confidence.POTENTIAL_RISK
+
     return Finding(
         check_id="llm_prohibited_content",
         title=f"Potentially prohibited product content ({category})",
         severity=Severity.CRITICAL,
-        confidence=Confidence.CONFIRMED if result.get("confidence") == "confirmed" else Confidence.POTENTIAL_RISK,
+        confidence=_confidence_after_verification(model_confidence, verified),
         page_url=page.url,
-        evidence=result.get("evidence_quote") or result.get("reasoning", "(no evidence returned)"),
+        evidence=evidence_quote or result.get("reasoning", "(no evidence returned)"),
         policy_reference=policy_reference,
         policy_requirement_text=_requirement_excerpt(ctx),
         policy_last_verified=ctx.verified_at,
         recommended_fix="Review this product listing manually and remove/revise if it violates GMC product policies.",
         location=result.get("location"),
         from_cache=result.get("_from_cache", False),
+        evidence_verified=verified,
     )
 
 
@@ -512,11 +590,19 @@ async def check_claim_policy_contradiction(
         return None
 
     dimension = result.get("conflict_dimension") or "unspecified"
+    # Two quotes, two source texts - each verified against the specific page
+    # it's claimed to be verbatim from, not against the other page or the
+    # combined text (a claim_quote that's real text on the policy page but
+    # not the claim page would be exactly the kind of mix-up this is meant
+    # to catch, not something a combined check should paper over).
+    verified = verify_evidence_quote(claim_quote, claim_text) and verify_evidence_quote(policy_quote, policy_text)
+    model_confidence = Confidence.CONFIRMED if result.get("confidence") == "confirmed" else Confidence.POTENTIAL_RISK
+
     return Finding(
         check_id="llm_claim_policy_contradiction",
         title=f"Product/homepage claim contradicts the store's own policy page ({dimension.replace('_', ' ')})",
         severity=Severity.HIGH,
-        confidence=Confidence.CONFIRMED if result.get("confidence") == "confirmed" else Confidence.POTENTIAL_RISK,
+        confidence=_confidence_after_verification(model_confidence, verified),
         page_url=claim_page.url,
         evidence=f'Claim on {claim_page.url}: "{claim_quote}" — contradicts {policy_page.url}: "{policy_quote}"',
         policy_reference=_policy_reference(ctx),
@@ -525,6 +611,7 @@ async def check_claim_policy_contradiction(
         recommended_fix=result.get("recommended_fix") or "Align the claim with the store's actual stated policy, or update the policy page to match the claim.",
         location=result.get("location"),
         from_cache=result.get("_from_cache", False),
+        evidence_verified=verified,
     )
 
 

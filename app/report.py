@@ -101,6 +101,13 @@ def _page_status(page: CrawledPage, page_findings: list[Finding]) -> str:
     return "PASS"
 
 
+# Same wording app.llm.checks._NOTE_EVIDENCE_NOT_VERIFIED uses internally -
+# duplicated as a plain string rather than imported, to keep this reporting
+# module decoupled from the LLM-checks module (report.py already renders
+# findings from every check family, deterministic included, and shouldn't
+# need an import from one specific LLM check module just for this string).
+_NOTE_EVIDENCE_NOT_VERIFIED = "Evidence quote could not be independently verified as exact page text."
+
 _VERIFICATION_LABEL = {
     VerificationMethod.API_VERIFIED: "API-verified",
     VerificationMethod.PAGE_ONLY: "best-effort (page-only)",
@@ -142,6 +149,8 @@ def _format_finding(f: Finding) -> str:
     lines.append(f"  - Location: {location}")
     lines.append(f"  - Detected: {_format_timestamp(f.detected_at)}")
     lines.append(f"  - Evidence: {evidence}")
+    if not f.evidence_verified:
+        lines.append(f"  - {_NOTE_EVIDENCE_NOT_VERIFIED}")
     if policy_reference:
         lines.append(f"  - Policy: {policy_reference}")
     if requirement:
@@ -261,6 +270,8 @@ def _format_finding_rich(f: Finding) -> str:
         lines.append(f"- **Page URL:** {f.page_url}")
     lines.append(f"- **Location:** {location}")
     lines.append(f"- **Evidence:** {evidence}")
+    if not f.evidence_verified:
+        lines.append(f"- **Note:** {_NOTE_EVIDENCE_NOT_VERIFIED}")
     if f.screenshot_path:
         # Relative to Settings.report_output_dir (where this report itself
         # is written) - a plain Markdown image reference, resolved the same
@@ -294,7 +305,8 @@ def _per_page_findings_lines(page: CrawledPage, page_findings: list[Finding], ma
     if shown:
         for f in shown:
             lines.append(f"  - {_format_finding_compact(f)}")
-            lines.append(f"      Confidence: {f.confidence.value} | Verification: {_VERIFICATION_LABEL[f.verification_method]} | Evidence: {sanitize_for_report(f.evidence)}")
+            note = f" | {_NOTE_EVIDENCE_NOT_VERIFIED}" if not f.evidence_verified else ""
+            lines.append(f"      Confidence: {f.confidence.value} | Verification: {_VERIFICATION_LABEL[f.verification_method]} | Evidence: {sanitize_for_report(f.evidence)}{note}")
     elif major_only:
         lines.append("- No suspension-risk issues found.")
     else:

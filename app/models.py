@@ -227,6 +227,24 @@ class Finding(BaseModel):
     # otherwise, including when a screenshot was attempted but the quote
     # couldn't be found (skipped rather than guessed, per that round's brief).
     screenshot_path: str | None = None
+    # Whether Finding.evidence (or, for llm_claim_policy_contradiction, both
+    # halves of it) was independently confirmed to be a real, verbatim
+    # substring of the page text an LLM-graded check actually saw - not just
+    # schema-shaped output (forced-tool-call structured output only
+    # guarantees a string sits in the right field, never that its *content*
+    # is real page text rather than a paraphrase or a description of what's
+    # missing - found live this round: check_policy_page_substance
+    # sometimes returned analytical prose in evidence_quote instead of an
+    # actual quote). True by default: every deterministic check's evidence
+    # is directly extracted from the page already (nothing to falsify), and
+    # an LLM finding whose evidence_quote came back empty (the model
+    # legitimately had no quote to give, falling back to its own reasoning
+    # text instead) makes no verbatim claim to verify either. Only ever set
+    # False by app.llm.checks's post-call verification step, for an LLM
+    # finding that specifically claimed a verbatim quote which could not be
+    # found in the source text it was graded against - see
+    # app.llm.checks.verify_evidence_quote.
+    evidence_verified: bool = True
 
 
 class LLMCoverageStats(BaseModel):

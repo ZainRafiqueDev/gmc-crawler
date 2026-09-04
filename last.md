@@ -464,16 +464,77 @@ Two other real, incidental findings from this round's live runs, both fixed:
 
 **477 tests passing** after this round.
 
-## 18. Explicitly open, not forgotten
+## 18. Closing the evidence-quote-fidelity gap (project-wide, this round)
 
-- **The accuracy validation set** — scaffolding (`validation/`) exists; still blocked on the user's
-  own manual ground-truth pass over 5 real stores.
-- **LLM `llm_policy_substance_*` evidence-quote fidelity** (§17) — the model's `evidence` field is
-  schema-required to be verbatim but isn't always; a prompt/schema hardening pass would need its
-  own dedicated round, not a screenshot-pipeline patch.
+§17 found that `llm_policy_substance_*` findings sometimes put analytical prose in `evidence_quote`
+instead of a real quote - the forced-schema/structured-output approach guarantees a string sits in
+the right field, never that its *content* is real page text. This round closed that gap across
+**all four** LLM-graded checks in `app/llm/checks.py`
+(`check_policy_page_substance`, `check_editorial_quality`, `check_prohibited_content`,
+`check_claim_policy_contradiction`), not just the one it was found on.
 
-Purchase-journey reachability validation, previously open, is now done (§14b) — validated live
-against a real checkout via the new disposable Docker+ngrok test store, not deferred any further.
-Part 1's live acceptance and the annotated-screenshot live example, both previously open, are now
-done (§17) — both surfaced and fixed real bugs live, exactly as this project's own stated
-discipline expects.
+**Design: in-memory, no live page visit.** `verify_evidence_quote(quote, source_text)` checks
+`quote` against the exact `page_text` variable already available at grading time
+(`CrawledPage.main_content_text or .text`) - no second Playwright visit, no live-browser
+dependency. Deliberately not `screenshot_annotator.py`'s live-DOM-search approach, which exists for
+a different reason (finding a *renderable element* to highlight/screenshot); this only needs to
+confirm the quote is real text within what the model was already shown. Normalization: whitespace
+collapsed, HTML entities decoded, case-folded - permissive enough that a genuinely real quote still
+verifies, strict enough that fabricated/paraphrased text still doesn't. `check_claim_policy_contradiction`
+verifies its two quotes independently, each against its own source page (a `claim_quote` that's
+real text on the *policy* page but not the *claim* page still fails, on purpose).
+
+**Never silently discard.** `Finding.evidence_verified: bool` (default `True` - deterministic
+findings have nothing to falsify; an LLM finding whose quote came back empty and fell back to its
+own reasoning text made no verbatim claim either). When a quote fails verification, the finding is
+still reported - only its confidence downgrades (`CONFIRMED` → `POTENTIAL_RISK`, via
+`_confidence_after_verification`), and the report renders a plain note ("Evidence quote could not
+be independently verified as exact page text.") in every rendering path (`_format_finding`,
+`_format_finding_rich`, and the compact per-page view) - which then flows into the `.docx`/`.pdf`
+exports automatically, since those render the already-generated Markdown.
+
+**Spot-checked, not just trusted.** Per the explicit instruction to rule out normalization gaps
+before treating a "not found" as a real fidelity problem: both live failures below were manually
+re-fetched and confirmed as genuine LLM fabrications, not verification bugs.
+
+**Live-validated against `vellano.site` and `leafloop.site`** (16 total text-based LLM findings
+across both, current live content):
+
+- `leafloop.site`: 7 text findings, 6 verified cleanly, 1 flagged - `"Buy flwres here"`
+  (`llm_editorial_quality`, homepage). Re-fetched the real homepage and extracted the exact
+  `main_content_text` the check saw: no "flwres" (or any typo like it) appears anywhere on the
+  page - a genuine model fabrication, not a normalization miss.
+- `vellano.site`: 9 text findings, 8 verified cleanly, 1 flagged - `"Generic text on the website
+  that says 'Add customer reviews and testimonials here' or an empty box that says 'lorem ipsum.'"`
+  - by its own phrasing this describes a *category* of issue hypothetically, not a literal quote;
+  correctly caught.
+- Both real `llm_claim_policy_contradiction` findings this round (one on each store, each with a
+  working annotated screenshot per §17) verified cleanly on both their claim-page and policy-page
+  quotes - live confirmation the two-source-text verification path works on genuine matches, not
+  just synthetic ones.
+- **Combined: 14/16 (87.5%) of this round's real LLM text findings verified cleanly; 12.5% were
+  correctly flagged and downgraded, never dropped.** That fraction is a live signal on how
+  widespread the gap actually is across the whole check suite (meaningful, not negligible) - not
+  just proof the mechanism runs.
+
+New tests in `tests/test_llm_evidence_verification.py` (22 tests): pure-function coverage for
+`verify_evidence_quote`/`_normalize_for_quote_match`/`_confidence_after_verification` - including
+against real page text and both real quote/non-quote pairs captured live this session (not just
+synthetic cases) - plus integration coverage for all four checks (real quote stays verified/
+confirmed; fabricated quote gets flagged/downgraded; empty quote stays trivially verified) and
+report-rendering coverage confirming the note appears only when verification actually failed.
+
+**499 tests passing** after this round (477 + 22 new).
+
+## 19. Project state: everything closed except the one item that needs the user, not more code
+
+Every engineering gap raised across every follow-up round in this project - adaptive crawl
+budgeting, per-category fairness, audit history, policy-change monitoring, purchase-journey
+reachability, annotated screenshots, and now evidence-quote fidelity - has been built, tested, and
+live-validated against real stores, with every real bug live testing surfaced along the way fixed
+immediately rather than filed for later. Nothing remains open in the codebase.
+
+**The one remaining item, project-wide, is the accuracy validation set** (`validation/`) - the
+scaffolding exists, but the actual ground-truth pass over 5 real stores requires the user's own
+manual judgment call on each one (what a human reviewer would flag), not something this tool can
+generate for itself without becoming its own judge. That is the only thing left.
