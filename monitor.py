@@ -75,7 +75,9 @@ async def main_async(argv: list[str] | None = None) -> int:
     settings = load_settings()
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch()
+        # See app/api/main.py's lifespan for why --disable-dev-shm-usage matters
+        # in a memory-constrained container.
+        browser = await pw.chromium.launch(args=["--disable-dev-shm-usage"])
         try:
             service = await _build_service(settings, browser)
 

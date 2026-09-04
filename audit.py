@@ -130,7 +130,9 @@ async def main_async(argv: list[str] | None = None) -> int:
     llm_cache: LLMCache | None = None if args.no_cache else LLMCache(db)
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch()
+        # See app/api/main.py's lifespan for why --disable-dev-shm-usage matters
+        # in a memory-constrained container.
+        browser = await pw.chromium.launch(args=["--disable-dev-shm-usage"])
         try:
             try:
                 result = await asyncio.wait_for(

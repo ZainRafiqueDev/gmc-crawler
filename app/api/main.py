@@ -62,7 +62,15 @@ async def lifespan(app: FastAPI):
     settings = load_settings()
 
     playwright = await async_playwright().start()
-    browser = await playwright.chromium.launch()
+    # --disable-dev-shm-usage: Docker containers default to a 64MB /dev/shm,
+    # far below what Chromium wants for its shared memory - under real
+    # memory pressure (a small container, e.g. Render's free 512MB tier)
+    # this is a well-known source of Chromium crashing/being killed
+    # independent of the container's own OOM behavior. Makes Chromium use
+    # /tmp instead, which has no such small fixed cap. Confirmed live: a
+    # real audit against a real store was silently killed mid-crawl on a
+    # 512MB instance (no Python traceback, just an abrupt process restart).
+    browser = await playwright.chromium.launch(args=["--disable-dev-shm-usage"])
 
     db = Database(settings.database_url)
     await db.init()
