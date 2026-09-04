@@ -184,6 +184,37 @@ async def test_action_log_records_every_step_in_order():
 
 
 @pytest.mark.asyncio
+async def test_product_page_navigation_failure_degrades_to_a_finding_not_a_crash():
+    """Regression: found live setting up purchase-journey validation against
+    a real disposable test store - a raw navigation failure on the initial
+    product-page load was the one step in this whole flow with no
+    try/except around it, so it propagated all the way up and crashed the
+    entire audit.py CLI process instead of degrading to a CANNOT_VERIFY
+    finding like every other failure path here already does.
+    """
+    class FailingPage:
+        async def goto(self, url, timeout=None, wait_until=None):
+            raise Exception("net::ERR_CONNECTION_CLOSED")
+
+    context = MagicMock()
+    context.new_page = AsyncMock(return_value=FailingPage())
+    context.close = AsyncMock()
+    context.add_init_script = AsyncMock()
+    context.route = AsyncMock()
+    browser = MagicMock()
+    browser.new_context = AsyncMock(return_value=context)
+
+    result = await run_purchase_journey_check(browser, "https://shop.example/", "https://shop.example/product/widget")
+
+    assert result.stopped_before_payment is True
+    assert any(f.check_id == "purchase_journey_product_page_unreachable" for f in result.findings)
+    finding = next(f for f in result.findings if f.check_id == "purchase_journey_product_page_unreachable")
+    assert finding.confidence == Confidence.CANNOT_VERIFY
+    assert "ERR_CONNECTION_CLOSED" in finding.evidence
+    context.close.assert_awaited_once()  # context still cleaned up despite the failure
+
+
+@pytest.mark.asyncio
 async def test_result_always_reports_stopped_before_payment_true():
     # even in every failure branch tested above, stopped_before_payment must be True -
     # there is no code path that sets it False, by design.

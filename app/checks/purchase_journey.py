@@ -87,7 +87,7 @@ class _JourneyRunner:
         self.log.append(entry)
         logger.info("[purchase-journey] %s %s", action, f"- {detail}" if detail else "")
 
-    async def run(self, browser: Browser, product_url: str) -> PurchaseJourneyResult:
+    async def run(self, browser: Browser, product_url: str, extra_headers: dict[str, str] | None = None) -> PurchaseJourneyResult:
         try:
             await assert_public_url(product_url)
         except SSRFBlockedError as exc:
@@ -101,11 +101,17 @@ class _JourneyRunner:
             ))
             return self._finish()
 
+        headers = {"Accept-Language": "en-US,en;q=0.9"}
+        if extra_headers:
+            # Opt-in, off by default - see app.fetch.PageFetcher's identical
+            # parameter for why this exists (a target-side gate/interstitial
+            # unrelated to and never a substitute for the SSRF guard below).
+            headers.update(extra_headers)
         context = await browser.new_context(
             user_agent=BROWSER_USER_AGENT,
             viewport=STEALTH_VIEWPORT,
             locale="en-US",
-            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+            extra_http_headers=headers,
         )
         await context.add_init_script(STEALTH_INIT_SCRIPT)
         await install_ssrf_guard(context)  # also blocks redirects/subresources to internal addresses
@@ -113,7 +119,21 @@ class _JourneyRunner:
 
         try:
             self._record("navigate_to_product", product_url)
-            await page.goto(product_url, timeout=_NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            try:
+                await page.goto(product_url, timeout=_NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            except Exception as exc:  # noqa: BLE001 - every other step in this flow degrades to a Finding on failure; this one must too, not crash the whole audit
+                self._record("navigate_to_product_failed", str(exc))
+                self.findings.append(Finding(
+                    check_id="purchase_journey_product_page_unreachable",
+                    title="Could not load the product page for the purchase journey check",
+                    severity=Severity.LOW,
+                    confidence=Confidence.CANNOT_VERIFY,
+                    page_url=product_url,
+                    evidence=f"Navigation to {product_url} failed: {exc}",
+                    recommended_fix="Re-check manually; the page may be temporarily unreachable or blocking automated requests.",
+                    location=None,
+                ))
+                return self._finish()
             product_price = await self._read_product_price(page)
 
             clicked = await self._click_add_to_cart(page)
@@ -283,6 +303,8 @@ class _JourneyRunner:
             ))
 
 
-async def run_purchase_journey_check(browser: Browser, base_url: str, product_url: str) -> PurchaseJourneyResult:
+async def run_purchase_journey_check(
+    browser: Browser, base_url: str, product_url: str, extra_headers: dict[str, str] | None = None,
+) -> PurchaseJourneyResult:
     runner = _JourneyRunner(base_url)
-    return await runner.run(browser, product_url)
+    return await runner.run(browser, product_url, extra_headers)

@@ -59,3 +59,39 @@ def test_domain_min_delay_clamped_to_a_sane_range():
     assert Settings(crawl_domain_min_delay_seconds=-5).crawl_domain_min_delay_seconds == 0.0
     assert Settings(crawl_domain_min_delay_seconds=999).crawl_domain_min_delay_seconds == 30.0
     assert Settings(crawl_domain_min_delay_seconds=1.5).crawl_domain_min_delay_seconds == 1.5
+
+
+# --- crawl_extra_headers (purchase-journey validation follow-up) ----------
+
+def test_crawl_extra_headers_empty_string_parses_to_empty_dict():
+    """Regression: an empty string is the documented .env.example "off"
+    value for this field - it must never crash settings loading. Found live
+    setting up purchase-journey validation: pydantic-settings auto-JSON-
+    decodes a dict-typed env var *before* any field validator runs, and
+    raises outright on "" rather than treating it as empty - confirmed by
+    actually loading Settings via the environment, not just constructing it
+    directly (that path bypasses the auto-decoding entirely and would have
+    missed this)."""
+    import os
+    from app.config import load_settings
+
+    os.environ["CRAWL_EXTRA_HEADERS"] = ""
+    try:
+        settings = load_settings()
+    finally:
+        del os.environ["CRAWL_EXTRA_HEADERS"]
+    assert settings.crawl_extra_headers_dict == {}
+
+
+def test_crawl_extra_headers_unset_parses_to_empty_dict():
+    assert Settings().crawl_extra_headers_dict == {}
+
+
+def test_crawl_extra_headers_valid_json_parses_to_dict():
+    settings = Settings(crawl_extra_headers='{"ngrok-skip-browser-warning": "true"}')
+    assert settings.crawl_extra_headers_dict == {"ngrok-skip-browser-warning": "true"}
+
+
+def test_crawl_extra_headers_malformed_json_degrades_to_empty_dict_not_a_crash():
+    settings = Settings(crawl_extra_headers="not valid json")
+    assert settings.crawl_extra_headers_dict == {}

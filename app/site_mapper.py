@@ -301,7 +301,7 @@ async def map_site(base_url: str, browser: Browser, settings: Settings, platform
 async def _map_site(base_url: str, browser: Browser, settings: Settings, proxy_rotator, platform: Platform | None = None) -> SiteMap:
     fetcher = PageFetcher(
         browser, max_attempts=3, domain_min_delay_seconds=settings.crawl_domain_min_delay_seconds,
-        proxy_rotator=proxy_rotator,
+        proxy_rotator=proxy_rotator, extra_headers=settings.crawl_extra_headers_dict or None,
     )
     home_norm = _normalize(base_url)
     home_netloc = _root_netloc(urlparse(home_norm).netloc)

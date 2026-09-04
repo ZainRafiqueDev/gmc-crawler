@@ -423,6 +423,7 @@ class PageFetcher:
         max_bot_block_attempts: int = 2,
         domain_min_delay_seconds: float = 0.0,
         proxy_rotator: ProxyRotator | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.browser = browser
         self.max_attempts = max_attempts
@@ -443,6 +444,17 @@ class PageFetcher:
         # fetch attempt already (below), so picking the next pool entry per
         # attempt gives real rotation across a multi-endpoint pool for free.
         self._proxy_rotator = proxy_rotator
+        # Opt-in, off by default (None) - never used for a normal real-store
+        # audit. Exists for the rare case where the *target itself* (not
+        # this tool) requires a specific header to be reachable at all - a
+        # staging environment gate, or a tunnel provider's own anti-abuse
+        # interstitial (e.g. ngrok's free-tier "you are about to visit..."
+        # page, encountered live setting up the purchase-journey validation
+        # test store - a real, disposable Docker+tunnel environment, not a
+        # weakening of anything this tool checks). Distinct from the SSRF
+        # guard entirely: this only ever adds a header to an already-allowed
+        # request, never changes which addresses are reachable.
+        self._extra_headers = extra_headers
 
     async def _wait_for_challenge_to_resolve(self, page, initial_html: str) -> str:
         """Cloudflare/DDoS-Guard-style JS interstitials exist specifically to
@@ -515,11 +527,14 @@ class PageFetcher:
 
             await self._throttle.wait(domain)
 
+            headers = {"Accept-Language": "en-US,en;q=0.9"}
+            if self._extra_headers:
+                headers.update(self._extra_headers)
             context_kwargs = dict(
                 user_agent=BROWSER_USER_AGENT,
                 viewport=STEALTH_VIEWPORT,
                 locale="en-US",
-                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                extra_http_headers=headers,
             )
             if self._proxy_rotator is not None:
                 context_kwargs["proxy"] = to_playwright_proxy(self._proxy_rotator.next())

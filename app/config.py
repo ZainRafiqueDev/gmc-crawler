@@ -1,6 +1,7 @@
 """Runtime configuration, loaded from environment / .env."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from pydantic import field_validator
@@ -99,6 +100,32 @@ class Settings(BaseSettings):
     proxy_username: str = ""
     proxy_password: str = ""
     proxy_pool: str = ""      # comma-separated full proxy URLs for client-side round-robin; takes precedence over proxy_server if set
+
+    # Opt-in, off by default ("" = no change to any request this tool
+    # makes). Never a substitute for or interaction with the SSRF guard -
+    # only ever adds a header to a request that guard already allowed.
+    # Exists for the rare case where the *target itself* requires a
+    # specific header to be reachable at all (a staging-environment gate, or
+    # a tunnel provider's own anti-abuse interstitial - e.g. ngrok's
+    # free-tier warning page, hit live setting up the purchase-journey
+    # validation test store). Real GMC store audits never need this.
+    #
+    # Deliberately a plain string (JSON), not dict[str, str]: pydantic-
+    # settings auto-JSON-decodes a dict-typed env var *before* any field
+    # validator runs, and crashes outright on "" (the documented, intended
+    # "off" value in .env.example) rather than treating it as empty -
+    # confirmed live, not hypothetical. Parsed tolerantly below instead.
+    crawl_extra_headers: str = ""
+
+    @property
+    def crawl_extra_headers_dict(self) -> dict[str, str]:
+        if not self.crawl_extra_headers:
+            return {}
+        try:
+            parsed = json.loads(self.crawl_extra_headers)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     # Fixed-size LLM catalog sampling follow-up (Part 1.3, option C, user-confirmed
     # 2026-09-03): min(this cap, max(5, 5% of reachable product pages)), risk-weighted

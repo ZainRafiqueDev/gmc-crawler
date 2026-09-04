@@ -156,7 +156,9 @@ async def main_async(argv: list[str] | None = None) -> int:
                         "This never submits payment, but confirm this store is in test/sandbox payment mode.",
                         product_url,
                     )
-                    journey_result = await run_purchase_journey_check(browser, result["platform"].base_url, product_url)
+                    journey_result = await run_purchase_journey_check(
+                        browser, result["platform"].base_url, product_url, extra_headers=settings.crawl_extra_headers_dict or None,
+                    )
                     result["findings"] = result.get("findings", []) + journey_result.findings
                     # Regenerate the report so journey findings appear in the severity
                     # sections/page-by-page/executive-summary like every other finding -
