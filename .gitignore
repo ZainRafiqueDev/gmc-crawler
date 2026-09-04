@@ -11,3 +11,5 @@ reports/
 *.db
 validation/validation_set.json
 validation/results/
+/claude
+./claude

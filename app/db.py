@@ -4,16 +4,22 @@ history (for delta reports), and policy-source snapshots (for independent
 policy-update detection).
 
 Defaults to a local `sqlite+aiosqlite` file so registering/running a monitor
-needs zero setup - point `DATABASE_URL` at `postgresql+asyncpg://...`
-(Supabase is fine, per the original project brief) for production and
-nothing else changes; these are plain SQLAlchemy models, portable across
-both.
+needs zero setup - point `DATABASE_URL` at `postgresql+asyncpg://...` for
+production; these are plain SQLAlchemy models, portable across both. Every
+datetime column is declared `DateTime(timezone=True)` deliberately, not
+left to the default mapping: every datetime this app produces (`_utcnow()`
+below) is timezone-aware UTC, and Postgres's default `TIMESTAMP WITHOUT
+TIME ZONE` column type rejects a tz-aware value outright (asyncpg raises
+"can't subtract offset-naive and offset-aware datetimes") - SQLite doesn't
+enforce this at all, so the mismatch was invisible in local/SQLite dev and
+only surfaced live against a real Postgres database. Confirmed live, not
+hypothetical.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import ForeignKey, UniqueConstraint, inspect, text
+from sqlalchemy import DateTime, ForeignKey, UniqueConstraint, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -46,9 +52,9 @@ class MonitoredStore(Base):
     # string enum so the existing mode values/logic never have to change.
     on_policy_change: Mapped[bool] = mapped_column(default=False)
 
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
-    last_full_audit_at: Mapped[datetime | None] = mapped_column(default=None)
-    last_cheap_check_at: Mapped[datetime | None] = mapped_column(default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_full_audit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_cheap_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
 class PageSnapshot(Base):
@@ -63,7 +69,7 @@ class PageSnapshot(Base):
     url: Mapped[str]
     content_hash: Mapped[str]
     dom_hash: Mapped[str]
-    fetched_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class AuditRun(Base):
@@ -77,8 +83,8 @@ class AuditRun(Base):
     store_id: Mapped[int] = mapped_column(ForeignKey("monitored_stores.id"))
     run_type: Mapped[str]  # "full" | "cheap_check"
     trigger: Mapped[str]  # "interval" | "on_change" | "manual"
-    started_at: Mapped[datetime] = mapped_column(default=_utcnow)
-    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     report_markdown: Mapped[str | None] = mapped_column(default=None)
     # Same report, filtered to Critical/High (real GMC suspension-risk)
     # findings only - computed alongside report_markdown at generation time
@@ -112,7 +118,7 @@ class PolicySourceSnapshot(Base):
     policy_id: Mapped[str] = mapped_column(unique=True)
     source_url: Mapped[str]
     content_hash: Mapped[str]
-    checked_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class AuditJobRecord(Base):
@@ -150,8 +156,8 @@ class AuditJobRecord(Base):
     # store's previous run) rather than a full report - only ever set for
     # on-demand store re-runs that had a previous run to diff against.
     is_delta: Mapped[bool] = mapped_column(default=False)
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class PolicyChunk(Base):
@@ -177,7 +183,7 @@ class PolicyChunk(Base):
     chunk_index: Mapped[int]
     chunk_text: Mapped[str]
     embedding_json: Mapped[str]
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class LLMCacheEntry(Base):
@@ -192,7 +198,7 @@ class LLMCacheEntry(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     cache_key: Mapped[str] = mapped_column(unique=True)
     result_json: Mapped[str]
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 def _add_missing_columns(sync_conn) -> None:
