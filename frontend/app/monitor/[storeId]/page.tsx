@@ -158,6 +158,7 @@ export default function StoreLatestReportPage() {
             <DownloadButton href={latestReportDownloadUrl(Number(storeId), "md", majorOnly)}>Download Markdown</DownloadButton>
             <DownloadButton href={latestReportDownloadUrl(Number(storeId), "docx", majorOnly)}>Download Word (.docx)</DownloadButton>
             <DownloadButton href={latestReportDownloadUrl(Number(storeId), "pdf", majorOnly)}>Download PDF</DownloadButton>
+            <DownloadButton href={latestReportDownloadUrl(Number(storeId), "csv")}>Download full detail (.csv)</DownloadButton>
           </motion.div>
 
           <motion.div variants={staggerItem} className="glass-card rounded-xl p-4">

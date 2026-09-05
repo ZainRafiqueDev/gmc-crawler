@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from app.fetch import FAILURE_CATEGORY_LABELS, FAILURE_CATEGORY_RECOMMENDATIONS, FAILURE_CATEGORY_SHORT_LABELS
+from app.finding_aggregation import aggregate_repetitive_findings, is_aggregatable_check_id
 from app.impact_tier import policy_area_for_finding
 from app.models import (
     AdsEligibilityImpact, Confidence, CrawledPage, Finding, ImpactTier, LLMCoverageStats, PageType, Platform,
@@ -768,8 +769,21 @@ def generate_markdown_report(
     all, for any caller that doesn't have this (e.g. a test constructing
     findings directly) - it does NOT render a misleadingly-confident "100%
     checked" claim in that case.
+
+    Report-bloat follow-up round: `findings` is aggregated (see
+    app.finding_aggregation.aggregate_repetitive_findings) before anything
+    else in this function reads it, so every count/section below (Total
+    findings, the risk score, Policy-by-Policy, Other Findings, Page-by-
+    Page) reflects distinct aggregated issues, not raw per-instance counts -
+    found live to be the actual source of a 6,337-finding, 3,327-page report
+    for what was really a handful of repeated patterns. The caller's own
+    `findings` list (e.g. what gets persisted for audit history/delta
+    comparison, or a CSV export) is untouched - this function only
+    aggregates its own local copy.
     """
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    findings = aggregate_repetitive_findings(findings)
 
     suspension_findings = [f for f in findings if is_suspension_risk_finding(f)]
     other_findings = [f for f in findings if not is_suspension_risk_finding(f)]
@@ -923,7 +937,23 @@ def generate_markdown_report(
     overview_pages = [p for p in site_map.pages if not is_catalog_page(p)]
     catalog_pages = [p for p in site_map.pages if is_catalog_page(p)]
 
-    page_lines = ["## Page-by-Page Findings", "", "### Store Overview", ""]
+    page_lines = ["## Page-by-Page Findings", ""]
+    # A repeated site-wide pattern (e.g. one hardcoded link on every page, or
+    # missing image alt text broadly across the catalog) is now a single
+    # aggregated finding above with no single page_url - it was already
+    # dropped out of individual pages' own finding lists below (they were
+    # only ever populated from findings that still carry a page_url), so
+    # this is the one place a reader needs pointing to it rather than
+    # finding it silently missing per-page.
+    if any(f.page_url is None and is_aggregatable_check_id(f.check_id) for f in findings):
+        page_lines.append(
+            "_Site-wide/repeated patterns (hardcoded links, image alt-text/quality issues found broadly across "
+            "the catalog, etc.) are listed once each under \"Other Findings\" above, not repeated on every page "
+            "below._"
+        )
+        page_lines.append("")
+    page_lines.append("### Store Overview")
+    page_lines.append("")
     page_lines.extend(_page_by_page_block(overview_pages, all_findings_by_page, major_only))
     page_lines.extend(_catalog_section_lines(catalog_pages, all_findings_by_page, major_only))
     sections.append("\n".join(page_lines))
@@ -964,12 +994,27 @@ def generate_markdown_report(
     return "\n\n".join(sections) + "\n"
 
 
-def _finding_key(f: Finding) -> tuple[str, str]:
+def _finding_key(f: Finding) -> tuple[str, str, str]:
     """Stable identity for "is this the same finding across two runs" - the
     check plus the page it's about. Evidence text is allowed to change (a
     price, a wording) without that counting as a different finding.
+
+    Includes `location`, but ONLY for check_ids aggregate_repetitive_findings
+    ever touches (report-bloat follow-up round): an aggregated finding has
+    page_url=None, and a check_id can now produce several distinct
+    aggregated findings at once (e.g. one per distinct hardcoded link), so
+    (check_id, page_url) alone would collide them all into one key.
+    Aggregated findings' `location` is a stable per-group selector
+    deliberately kept free of any run-varying count (see
+    app.finding_aggregation._aggregate_group). Deliberately NOT extended to
+    every other check_id: an LLM-graded finding's `location` is model-
+    generated free text that can legitimately reword slightly between two
+    runs of the same underlying finding ("shipping policy section" vs
+    "Shipping Policy section") - folding it in there would misread that
+    wording drift as a resolved-and-new pair instead of an unchanged finding.
     """
-    return (f.check_id, f.page_url or "")
+    location_component = f.location or "" if is_aggregatable_check_id(f.check_id) else ""
+    return (f.check_id, f.page_url or "", location_component)
 
 
 def generate_delta_report(
@@ -987,8 +1032,17 @@ def generate_delta_report(
     major_only=True restricts New/Resolved/Changed to suspension-risk
     findings (see is_suspension_risk_finding) - same definition as the full
     report's major_only, for consistency.
+
+    Both finding lists are aggregated (see generate_markdown_report's own
+    docstring on why) before comparison, so a delta report doesn't show 300
+    "new" per-instance findings the moment a repeated pattern's page count
+    shifts by one - it compares the same aggregated view the full report
+    shows.
     """
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    previous_findings = aggregate_repetitive_findings(previous_findings)
+    current_findings = aggregate_repetitive_findings(current_findings)
 
     prev_by_key = {_finding_key(f): f for f in previous_findings}
     curr_by_key = {_finding_key(f): f for f in current_findings}

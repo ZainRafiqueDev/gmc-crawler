@@ -142,6 +142,7 @@ export default function ReportPage() {
         <DownloadButton href={reportDownloadUrl(jobId, "md", majorOnly)}>Download Markdown</DownloadButton>
         <DownloadButton href={reportDownloadUrl(jobId, "docx", majorOnly)}>Download Word (.docx)</DownloadButton>
         <DownloadButton href={reportDownloadUrl(jobId, "pdf", majorOnly)}>Download PDF</DownloadButton>
+        <DownloadButton href={reportDownloadUrl(jobId, "csv")}>Download full detail (.csv)</DownloadButton>
       </motion.div>
 
       <motion.div variants={staggerItem} className="glass-card rounded-xl p-4 mb-8 max-h-[600px] overflow-y-auto">

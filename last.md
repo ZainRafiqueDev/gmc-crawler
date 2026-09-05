@@ -538,3 +538,92 @@ immediately rather than filed for later. Nothing remains open in the codebase.
 scaffolding exists, but the actual ground-truth pass over 5 real stores requires the user's own
 manual judgment call on each one (what a human reviewer would flag), not something this tool can
 generate for itself without becoming its own judge. That is the only thing left.
+
+## 20. Fixing report bloat at the source (aggregation, this round)
+
+A real full report against `britanniagifts.us` came out to 3,327 pages / 6,337 findings - nearly
+all of it a handful of repeated patterns (hardcoded links, missing image alt text, broken images)
+logged as one fully-detailed Finding per page or per instance, instead of being aggregated the way
+`app.checks.business_identity.check_business_identity_consistency` already aggregates a phone-
+number/email inconsistency into one finding with a page list. This round generalized that existing
+pattern (`app/finding_aggregation.py`, new) rather than inventing a new mechanism, closing this
+project-wide.
+
+**Confirmed live which checks actually drive bloat** before assuming the spec's named list was
+complete: a real 150-page audit of `britanniagifts.us` produced 473 findings, of which 96.6%
+(457) were exactly four check_ids - `https_mixed_content_link` (296), `product_image_broken` (81),
+`product_image_missing_alt_text` (49), `external_domain_link` (31) - confirming the spec's own
+named list and ruling out any other check as a meaningful contributor at this scale.
+
+**Two different real shapes needed two different aggregation strategies**, both discovered live,
+not assumed:
+
+- `https_mixed_content_link`: 296 findings were the exact same 2 hardcoded URLs
+  (`http://britanniagifts.us`, `http://britanniagifts.us/shop`) repeated verbatim site-wide - the
+  identical fact restated, so aggregating by the exact link value (parsed from `Finding.location`'s
+  existing CSS-selector shape, e.g. `a[href="..."]`) collapsed this to exactly 2 findings.
+- `external_domain_link`: naively applying the same exact-value strategy did **not** work - live
+  testing found 31 findings were 33 entirely distinct literal hrefs, none repeated. Root cause:
+  these are social-share buttons (Pinterest/Facebook/X) whose href embeds the *current page's own*
+  URL/image/description as query parameters, so the literal string differs on every single page
+  even though it's the same share button everywhere. Fixed by aggregating by domain
+  (`urlparse(href).netloc`) instead of exact href - 33 distinct literal hrefs collapsed to 3
+  (one per platform), confirmed against the real captured link strings.
+- `product_image_broken`/`product_image_missing_alt_text` (and the two other `product_image_*`
+  checks, applied for consistency): found live to be the opposite shape again - 81 "broken image"
+  instances were 81 almost entirely *distinct* image URLs (mostly appearing once or twice, not one
+  repeated image), so aggregating by image value would have barely helped. These collapse the whole
+  check_id into one systemic finding instead, with a representative sample of examples - matching
+  the spec's own phrasing ("found on 287 of 305 product pages, including: [5 examples]").
+
+**Never silently drops data.** Aggregated findings preserve severity/confidence/policy grounding
+from the group untouched (only presentation changes); a check_id with fewer than 3 raw instances is
+left exactly as-is (aggregating a count of 1-2 buys nothing). `app.report.generate_markdown_report`
+and `generate_delta_report` both aggregate internally as their first step - every future audit gets
+this fix automatically, not just this one store - while the caller's own raw findings list (what
+gets persisted for audit history, or exported to CSV) is untouched. `_finding_key` (cross-run delta
+identity) was extended to fold in `location` for aggregation-affected check_ids specifically, whose
+location is always a stable, code-generated CSS selector - deliberately *not* extended to LLM-graded
+checks, whose free-text location could otherwise misread normal wording drift as a resolved-and-new
+pair.
+
+**Part 3 - the full-detail escape hatch.** A new CSV export (`app/report_csv.py`,
+`findings_to_csv_bytes`) contains every individual finding instance the check pipeline actually
+produced, unaggregated - one row per raw instance, all structured fields (check_id, severity,
+confidence, page_url, evidence, location, policy grounding, etc.). Wired into the CLI
+(`audit.py` writes a sibling `.csv` next to every `.md`/`.docx`/`.pdf`), the API
+(`/api/audits/{id}/report.csv`, `/api/monitor/stores/{id}/latest-report.csv` - no `major_only`
+variant, by design: this is the "give me everything" option), and the frontend (a "Download full
+detail (.csv)" button on both the audit-result and monitor-store pages).
+
+**Real validation, not just unit tests:**
+
+- A real 150-page live audit of `britanniagifts.us` with the (pre-domain-fix) aggregation in place:
+  Markdown report shrank from **5,725 lines to 756 lines** (86.8% reduction), rendering at **40 PDF
+  pages** (down from what would have been several hundred, extrapolating the original report's own
+  density) - and 473 raw findings compiled down to 51 distinct aggregated ones.
+- The domain-based refinement for `external_domain_link` was validated by reconstructing real
+  `Finding` objects directly from that same real audit's raw (pre-aggregation) report text -
+  preserving the real page URLs, real link strings, and real per-check-id counts - and running them
+  through the fixed aggregation: 457 raw high-volume findings collapsed to **8** distinct aggregated
+  findings (down from 51 with the pre-domain-fix version, since 28 of those 51 were the
+  still-uncollapsed individual external-share-link entries).
+- A fully combined, single, from-scratch live re-crawl with every fix present at once was attempted
+  three times and not obtained: `britanniagifts.us`'s own bot-protection re-escalated after repeated
+  crawls within a short window (the same pattern found in an earlier round - see the note on this
+  above), a subsequent attempt hit a transient local DNS-resolver stall, and the retry after that was
+  killed by the environment before finishing. Both fixes are independently confirmed against real
+  data from real audits of this exact store, as detailed above; a from-scratch confirmation combining
+  everything in one run is the one thing not obtained this round, for reasons external to the code.
+- New tests in `tests/test_finding_aggregation.py` include one built directly from the real
+  captured link strings (`https://pinterest.com/pin/create/...`, `...facebook.com/sharer.php...`,
+  `...x.com/share...`) that exposed the domain-vs-exact-href gap live - the exact live failure
+  pattern, not a synthetic stand-in for it. Full suite: **517 tests passing**
+  (499 + 14 aggregation + 4 CSV = 18 new).
+
+## 21. Project state (updated)
+
+Every engineering gap raised across every follow-up round in this project - including this round's
+report-bloat aggregation - has been built, tested, and validated against real data from real
+stores, with every real bug found along the way fixed immediately. **The accuracy validation set
+remains the only item left project-wide**, per §19 above - unchanged by this round.

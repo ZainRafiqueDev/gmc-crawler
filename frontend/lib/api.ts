@@ -110,12 +110,18 @@ export async function getAuditStatus(jobId: string): Promise<AuditJobStatus> {
   return asJson(res);
 }
 
-export function reportDownloadUrl(jobId: string, format: "md" | "docx" | "pdf", majorOnly = false): string {
-  return `${API_BASE}/api/audits/${jobId}/report.${format}${majorOnly ? "?major_only=true" : ""}`;
+export function reportDownloadUrl(jobId: string, format: "md" | "docx" | "pdf" | "csv", majorOnly = false): string {
+  // The CSV export (report-bloat follow-up round, Part 3) has no
+  // major_only variant by design - it's the "give me every raw finding
+  // instance" escape hatch, so majorOnly is ignored for it rather than
+  // silently accepted as a no-op query param the backend doesn't read.
+  const query = majorOnly && format !== "csv" ? "?major_only=true" : "";
+  return `${API_BASE}/api/audits/${jobId}/report.${format}${query}`;
 }
 
-export function latestReportDownloadUrl(storeId: number, format: "md" | "docx" | "pdf", majorOnly = false): string {
-  return `${API_BASE}/api/monitor/stores/${storeId}/latest-report.${format}${majorOnly ? "?major_only=true" : ""}`;
+export function latestReportDownloadUrl(storeId: number, format: "md" | "docx" | "pdf" | "csv", majorOnly = false): string {
+  const query = majorOnly && format !== "csv" ? "?major_only=true" : "";
+  return `${API_BASE}/api/monitor/stores/${storeId}/latest-report.${format}${query}`;
 }
 
 export async function registerStore(params: {

@@ -48,6 +48,7 @@ from app.graph import PHASE_LABELS
 from app.llm.cache import LLMCache
 from app.models import Finding
 from app.monitor_service import MonitorService
+from app.report_csv import findings_to_csv_bytes
 from app.report_docx import markdown_to_docx_bytes
 from app.report_pdf import markdown_to_pdf_bytes
 from app.scheduling import APSchedulerBackend
@@ -230,6 +231,24 @@ async def download_audit_report_pdf(job_id: str, request: Request, major_only: b
     )
 
 
+@app.get("/api/audits/{job_id}/report.csv")
+async def download_audit_report_csv(job_id: str, request: Request) -> Response:
+    """Full-detail export (report-bloat follow-up round, Part 3): the
+    Markdown/docx/PDF reports above render the aggregated view
+    (app.finding_aggregation) - this is every raw finding instance the
+    check pipeline actually produced (job.findings, never re-aggregated),
+    for anyone who needs the un-aggregated per-instance detail. No
+    major_only param - unlike the human-readable formats, this is the "give
+    me everything" option by design.
+    """
+    job = await _require_done_job(request, job_id)
+    return Response(
+        findings_to_csv_bytes(job.findings),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="report-{job_id}.csv"'},
+    )
+
+
 async def _require_done_job(request: Request, job_id: str) -> AuditJob:
     jobs: JobStore = request.app.state.jobs
     job = await jobs.get(job_id)
@@ -390,6 +409,20 @@ async def download_latest_report_pdf(store_id: int, request: Request, major_only
         pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="store-{store_id}-report.pdf"'},
+    )
+
+
+@app.get("/api/monitor/stores/{store_id}/latest-report.csv")
+async def download_latest_report_csv(store_id: int, request: Request) -> Response:
+    """Full-detail export, same as download_audit_report_csv - see that
+    endpoint's docstring. No major_only param, same reasoning."""
+    service: MonitorService = request.app.state.service
+    run = await _get_latest_run_or_404(service, store_id)
+    findings = [Finding.model_validate(d) for d in json.loads(run.findings_json)] if run.findings_json else []
+    return Response(
+        findings_to_csv_bytes(findings),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="store-{store_id}-report.csv"'},
     )
 
 

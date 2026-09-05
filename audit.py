@@ -25,6 +25,7 @@ from app.graph import run_audit
 from app.llm.cache import LLMCache
 from app.models import PageType
 from app.report import generate_markdown_report, safe_host_for_filename
+from app.report_csv import findings_to_csv_bytes
 from app.security.ssrf_guard import SSRFBlockedError, assert_public_url
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -182,9 +183,18 @@ async def main_async(argv: list[str] | None = None) -> int:
     output_path.write_text(report_text, encoding="utf-8")
 
     findings = result.get("findings", [])
+    # Full-detail export (report-bloat follow-up round, Part 3): the
+    # Markdown report above renders the aggregated view - this is every
+    # raw finding instance the check pipeline actually produced, for anyone
+    # who needs the un-aggregated detail (e.g. fixing every broken image
+    # one by one).
+    csv_path = output_path.with_suffix(".csv")
+    csv_path.write_bytes(findings_to_csv_bytes(findings))
+
     critical_count = sum(1 for f in findings if f.severity.value == "critical")
     logger.info("Audit complete: %d pages crawled, %d findings (%d critical). Report written to %s", len(result["site_map"].pages), len(findings), critical_count, output_path)
     print(f"\nReport written to: {output_path}")
+    print(f"Full-detail CSV written to: {csv_path}")
     return 0
 
 
