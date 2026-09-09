@@ -106,6 +106,14 @@ FAILURE_CATEGORY_LABELS: dict[str, str] = {
     # correctly (retried, then gave up) - only the category label was wrong.
     "http_error": "a real HTTP error response from the site (see the exact status code in the fetch error below), not a network-level failure",
     "unknown": "unreachable after retries for an unspecified reason",
+    # Not a fetch failure at all (the page returned HTTP 200) - a content-
+    # level judgment applied only in app.checks.deterministic.check_required_pages
+    # (see app/soft_404_detection.py): the page's content strongly matches
+    # either a deliberately-nonexistent URL probed this audit, or the site's
+    # own homepage, rather than looking like distinct real content - likely a
+    # soft-404/catch-all template. Never used to confirm a page missing, only
+    # to withhold confirming one present - see soft_404_detection's docstring.
+    "likely_soft_404": "returned HTTP 200, but its content looks like a generic/catch-all page rather than distinct real content",
 }
 
 FAILURE_CATEGORY_SHORT_LABELS: dict[str, str] = {
@@ -117,6 +125,7 @@ FAILURE_CATEGORY_SHORT_LABELS: dict[str, str] = {
     "network_error": "network error",
     "http_error": "HTTP error",
     "unknown": "unknown reason",
+    "likely_soft_404": "likely soft-404/catch-all",
 }
 
 # Actionable next step per category - reused by app.checks and app.report so
@@ -131,6 +140,7 @@ FAILURE_CATEGORY_RECOMMENDATIONS: dict[str, str] = {
     "blocked_ssrf": "Confirm the URL is correct - this tool refuses to fetch addresses that resolve to a non-public/internal IP, for safety.",
     "http_error": "Check the site/server for this specific status code and URL - if it's a real 5xx, re-run once the underlying issue clears; if an unexpected 4xx, confirm the URL is correct.",
     "unknown": "Re-run the audit; if this persists, investigate why the site could not be reached.",
+    "likely_soft_404": "Confirm manually whether this page's content is real - if the store's routing/theme returns a generic page for unmatched URLs instead of a real 404, ask the merchant to fix that (it also affects real broken links, not just this audit).",
 }
 
 

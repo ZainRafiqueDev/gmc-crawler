@@ -7,6 +7,7 @@ import asyncio
 import itertools
 import logging
 import re
+import uuid
 from urllib.parse import urljoin, urlparse, urlunparse
 from xml.etree import ElementTree
 
@@ -14,6 +15,7 @@ import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import Browser
 
+from app.change_detection import compute_content_hash, normalize_for_content_hash
 from app.checks.woocommerce_products import fetch_wc_product_count
 from app.config import Settings
 from app.fetch import PageFetcher
@@ -283,6 +285,34 @@ async def _fetch_and_classify(fetcher: PageFetcher, url: str, depth: int, home_n
     )
 
 
+async def _probe_soft_404_baseline(fetcher: PageFetcher, home_norm: str) -> tuple[str | None, str | None]:
+    """Once-per-audit probe of a guaranteed-nonexistent URL (an audit-scoped
+    token, not a hardcoded path re-used across runs and not re-randomized
+    per candidate - see app/soft_404_detection.py), establishing a known-
+    nonexistent content signature so app.checks.deterministic.
+    check_required_pages can tell a genuine required page apart from a
+    soft-404/catch-all template that happens to return HTTP 200.
+
+    Any failure here (network error, bot-block, whatever) just means no
+    baseline is available this run - returns (None, None), and soft-404
+    detection against this specific baseline degrades to a no-op for the
+    whole audit. This must never block, retry beyond the fetcher's own
+    normal retry policy, or fail the audit - it's a cheap, best-effort
+    signal, not a required step.
+    """
+    token = uuid.uuid4().hex[:16]
+    probe_url = f"{home_norm.rstrip('/')}/__gmc_nonexistent_{token}"
+    result = await fetcher.fetch(probe_url)
+    content_hash = compute_content_hash(result.text) if result.ok else None
+    logger.info(
+        "Soft-404 baseline probe: url=%s status=%s final_url=%s fetch_category=%s content_hash=%s",
+        probe_url, result.status, result.final_url, result.failure_category, content_hash,
+    )
+    if not result.ok:
+        return None, None
+    return content_hash, normalize_for_content_hash(result.text)
+
+
 async def map_site(base_url: str, browser: Browser, settings: Settings, platform: Platform | None = None) -> SiteMap:
     # Opt-in BYO proxy support (Part 5.2, app.proxy_config) - None (the
     # default, no proxy env vars set) means nothing here changes at all.
@@ -480,4 +510,14 @@ async def _map_site(base_url: str, browser: Browser, settings: Settings, proxy_r
         wave = next_wave
 
     logger.info("Crawl finished: %d page(s) visited (cap=%d, depth cap=%d)", len(pages), settings.crawl_max_pages, settings.crawl_max_depth)
-    return SiteMap(base_url=home_norm, pages=pages, sitemap_urls_found=len(sitemap_urls))
+
+    # Soft-404/catch-all detection baseline (follow-up round) - one extra
+    # fetch, after the real crawl, using the same fetcher/politeness/SSRF-
+    # guard path every other page already went through. Never blocks or
+    # fails the audit if it doesn't succeed - see _probe_soft_404_baseline.
+    soft_404_hash, soft_404_text = await _probe_soft_404_baseline(fetcher, home_norm)
+
+    return SiteMap(
+        base_url=home_norm, pages=pages, sitemap_urls_found=len(sitemap_urls),
+        soft_404_baseline_content_hash=soft_404_hash, soft_404_baseline_normalized_text=soft_404_text,
+    )

@@ -14,9 +14,17 @@ import hashlib
 from bs4 import BeautifulSoup
 
 
+def normalize_for_content_hash(text: str | None) -> str:
+    """The exact normalization compute_content_hash hashes - exposed on its
+    own so a caller that needs a *near*-identical comparison (not just exact-
+    hash equality, e.g. app/soft_404_detection.py) compares against the same
+    normalized string that was actually hashed, rather than re-deriving a
+    second, potentially-drifting normalization of its own."""
+    return " ".join((text or "").split())
+
+
 def compute_content_hash(text: str | None) -> str:
-    normalized = " ".join((text or "").split())
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return hashlib.sha256(normalize_for_content_hash(text).encode("utf-8")).hexdigest()
 
 
 def compute_dom_hash(html: str | None) -> str:

@@ -102,6 +102,18 @@ class SiteMap(BaseModel):
     # deliberate refusal to crawl, distinct from a failed crawl attempt, and
     # reported as such rather than as a pile of confident "missing" findings.
     robots_disallowed: bool = False
+    # Soft-404/catch-all detection (follow-up round, app/soft_404_detection.py):
+    # a known-nonexistent-URL probe run once per audit
+    # (app.site_mapper._probe_soft_404_baseline), so app.checks.deterministic.
+    # check_required_pages can tell a genuine required page apart from a
+    # soft-404 template that happens to return HTTP 200. Both None when the
+    # probe itself failed (network error, bot-block, etc.) - soft-404
+    # detection against this baseline just degrades to a no-op for this
+    # audit, it never blocks anything. Internal-use only, never rendered in
+    # the report - see app.fetch's probe-diagnostics logging for the
+    # human-readable trail instead.
+    soft_404_baseline_content_hash: str | None = None
+    soft_404_baseline_normalized_text: str | None = None
 
     def pages_of_type(self, page_type: PageType) -> list[CrawledPage]:
         return [p for p in self.pages if p.page_type == page_type]

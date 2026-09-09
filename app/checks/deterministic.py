@@ -11,6 +11,7 @@ from difflib import SequenceMatcher
 import httpx
 from bs4 import BeautifulSoup
 
+from app.change_detection import compute_content_hash, normalize_for_content_hash
 from app.fetch import (
     FAILURE_CATEGORY_LABELS,
     FAILURE_CATEGORY_RECOMMENDATIONS,
@@ -20,6 +21,7 @@ from app.fetch import (
 from app.models import Confidence, CrawledPage, Finding, PageType, Severity, SiteMap
 from app.page_classifier import SUPPORTED_LANGUAGES
 from app.security.ssrf_guard import safe_async_client
+from app.soft_404_detection import is_strong_content_match
 
 REQUIRED_PAGE_TYPES: dict[PageType, str] = {
     PageType.PRIVACY_POLICY: "Privacy policy",
@@ -130,6 +132,53 @@ def check_https(site_map: SiteMap) -> list[Finding]:
     return findings
 
 
+def _split_genuine_from_soft_404(
+    reachable: list[CrawledPage], site_map: SiteMap,
+) -> tuple[list[CrawledPage], list[tuple[CrawledPage, str]]]:
+    """Soft-404/catch-all detection (follow-up round, app/soft_404_detection.py):
+    splits a required page_type's reachable candidates into genuinely-distinct
+    pages versus ones whose content strongly matches either this audit's own
+    known-nonexistent-URL probe or the site's homepage - i.e. likely a
+    generic/catch-all template that happens to return HTTP 200, not real
+    content of the claimed type. Returns (genuine, soft_404_flagged) where
+    soft_404_flagged pairs each flagged page with which baseline it matched
+    ("baseline" or "homepage"), for the caller's evidence text.
+
+    Core invariant: this function only ever *removes* a candidate from
+    "genuine" - it never asserts a page doesn't exist. A required page_type
+    with zero genuine candidates falls through to check_required_pages' own
+    soft-404-specific CANNOT_VERIFY branch, never straight to "missing".
+    """
+    homepage = site_map.pages[0] if site_map.pages else None
+    homepage_hash = compute_content_hash(homepage.text) if homepage and homepage.reachable else None
+    homepage_text = normalize_for_content_hash(homepage.text) if homepage and homepage.reachable else None
+
+    genuine: list[CrawledPage] = []
+    flagged: list[tuple[CrawledPage, str]] = []
+    for page in reachable:
+        candidate_hash = compute_content_hash(page.text)
+        candidate_text = normalize_for_content_hash(page.text)
+
+        if is_strong_content_match(
+            candidate_text, candidate_hash,
+            site_map.soft_404_baseline_normalized_text, site_map.soft_404_baseline_content_hash,
+        ):
+            flagged.append((page, "baseline"))
+            continue
+
+        # Never compare the homepage against itself - a candidate that IS
+        # the homepage (e.g. a misclassification) would trivially "match".
+        if homepage is not None and page.url != homepage.url and is_strong_content_match(
+            candidate_text, candidate_hash, homepage_text, homepage_hash,
+        ):
+            flagged.append((page, "homepage"))
+            continue
+
+        genuine.append(page)
+
+    return genuine, flagged
+
+
 def check_required_pages(site_map: SiteMap) -> list[Finding]:
     # Nothing (or effectively nothing) could be fetched - a confident
     # "missing" verdict for any of the 5 required page types would be
@@ -150,7 +199,36 @@ def check_required_pages(site_map: SiteMap) -> list[Finding]:
     for page_type, label in REQUIRED_PAGE_TYPES.items():
         matches = site_map.pages_of_type(page_type)
         reachable = [p for p in matches if p.reachable]
-        if reachable:
+        genuine, soft_404_flagged = _split_genuine_from_soft_404(reachable, site_map)
+        if genuine:
+            continue
+
+        if soft_404_flagged:
+            # At least one candidate returned HTTP 200 but looks like a
+            # generic/catch-all page rather than distinct real content -
+            # withholds confirming the page present; never asserts it's
+            # missing (see _split_genuine_from_soft_404's docstring).
+            page, matched_against = soft_404_flagged[0]
+            matched_what = (
+                "a deliberately nonexistent URL probed during this audit"
+                if matched_against == "baseline" else "this site's own homepage"
+            )
+            findings.append(Finding(
+                check_id="required_page_present",
+                title=f"{label} page could not be confirmed - content looks like a generic/catch-all page",
+                severity=Severity.HIGH,
+                confidence=Confidence.CANNOT_VERIFY,
+                page_url=page.url,
+                evidence=(
+                    f"A page classified as '{label}' was found at {page.url} (HTTP {page.status}), but its content "
+                    f"strongly matches {matched_what} rather than looking like distinct real content - "
+                    f"{FAILURE_CATEGORY_LABELS['likely_soft_404']}. This is not a confirmed absence of the page; "
+                    "it just couldn't be confirmed present."
+                ),
+                policy_reference=f"GMC: Store must have a {label.lower()}",
+                recommended_fix=FAILURE_CATEGORY_RECOMMENDATIONS["likely_soft_404"],
+                location=None,
+            ))
             continue
 
         cannot_verify_matches = [p for p in matches if p.cannot_verify]
