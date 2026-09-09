@@ -162,9 +162,13 @@ deterministic_checks
 
 llm_grading
   → app/llm/checks.py::run_llm_checks(site_map, settings, cache, db)
-      per required policy page: check_policy_page_substance()
+      soft_404_flagged_page_urls(site_map)  — computed once at the top (same shared function
+        check_required_pages uses, app/soft_404_detection.py) - a required-page candidate flagged
+        here is skipped entirely for substance grading below, never independently graded
+      per required policy page (skipping soft-404-flagged candidates): check_policy_page_substance()
       homepage + sampled product pages: check_editorial_quality(), check_prohibited_content()
-      homepage/product pages matching a shipping/returns claim regex: check_claim_policy_contradiction()
+      homepage/product pages matching a shipping/returns claim regex, against whichever
+        shipping/returns policy page ISN'T soft-404-flagged: check_claim_policy_contradiction()
       each of the above → app/llm/policy_rag.py::get_policy_context() (real RAG retrieval)
                         → app/llm/factory.py::get_llm_client(settings) → LLMClient.call_tool()
                         → app/llm/checks.py::verify_evidence_quote() on the returned evidence_quote
@@ -210,6 +214,20 @@ app/report_csv.py::findings_to_csv_bytes(findings)                  → .csv  (s
 Each entry: what was touched, and — critically — whether it changed *what calls what* (not just
 internal logic). Newest first. See `decisions.md` for the reasoning behind each; see `last.md` for
 the full narrative.
+
+### Cycle: soft-404/LLM-substance redundant-finding fix
+- **New shared function**: `app/soft_404_detection.py::soft_404_flagged_page_urls(site_map)` -
+  extracted from (and now the single implementation behind) `app/checks/deterministic.py`'s
+  `_split_genuine_from_soft_404`, which now just calls it instead of recomputing its own inline
+  comparison. **New caller**: `app/llm/checks.py::run_llm_checks` now calls it too (once, near the
+  top) and checks membership before queuing `check_policy_page_substance` (both the real-LLM branch
+  and the `llm_configured=False` placeholder-finding branch) and before selecting a shipping/returns
+  policy page in `_claim_contradiction_tasks`. No new node, no new call into a different module from
+  `app/graph.py` - this is entirely inside the existing `deterministic_checks`/`llm_grading` nodes'
+  own internals.
+- Confirmed live (`leafloop.site`, a real GoDaddy-parked-domain site): before this fix, the report
+  showed both the soft-404 CANNOT_VERIFY finding *and* a redundant "lacks required substance"
+  finding for the same `/lander` page; after, only the former.
 
 ### Cycle: soft-404/catch-all detection
 - **`app/site_mapper.py`**: new `_probe_soft_404_baseline(fetcher, home_norm)`, called once at the

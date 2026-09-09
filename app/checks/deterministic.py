@@ -11,7 +11,6 @@ from difflib import SequenceMatcher
 import httpx
 from bs4 import BeautifulSoup
 
-from app.change_detection import compute_content_hash, normalize_for_content_hash
 from app.fetch import (
     FAILURE_CATEGORY_LABELS,
     FAILURE_CATEGORY_RECOMMENDATIONS,
@@ -21,7 +20,7 @@ from app.fetch import (
 from app.models import Confidence, CrawledPage, Finding, PageType, Severity, SiteMap
 from app.page_classifier import SUPPORTED_LANGUAGES
 from app.security.ssrf_guard import safe_async_client
-from app.soft_404_detection import is_strong_content_match
+from app.soft_404_detection import soft_404_flagged_page_urls
 
 REQUIRED_PAGE_TYPES: dict[PageType, str] = {
     PageType.PRIVACY_POLICY: "Privacy policy",
@@ -135,47 +134,24 @@ def check_https(site_map: SiteMap) -> list[Finding]:
 def _split_genuine_from_soft_404(
     reachable: list[CrawledPage], site_map: SiteMap,
 ) -> tuple[list[CrawledPage], list[tuple[CrawledPage, str]]]:
-    """Soft-404/catch-all detection (follow-up round, app/soft_404_detection.py):
-    splits a required page_type's reachable candidates into genuinely-distinct
-    pages versus ones whose content strongly matches either this audit's own
-    known-nonexistent-URL probe or the site's homepage - i.e. likely a
-    generic/catch-all template that happens to return HTTP 200, not real
-    content of the claimed type. Returns (genuine, soft_404_flagged) where
+    """Splits a required page_type's reachable candidates into genuinely-
+    distinct pages versus ones flagged by
+    app.soft_404_detection.soft_404_flagged_page_urls (the single shared
+    source of truth for "this page's identity is unconfirmed" -
+    app.llm.checks.run_llm_checks reads the exact same function so it
+    doesn't independently grade a page this check has already flagged as
+    ambiguous - see decisions.md). Returns (genuine, soft_404_flagged) where
     soft_404_flagged pairs each flagged page with which baseline it matched
-    ("baseline" or "homepage"), for the caller's evidence text.
+    ("baseline" or "homepage"), for this function's caller's evidence text.
 
     Core invariant: this function only ever *removes* a candidate from
     "genuine" - it never asserts a page doesn't exist. A required page_type
     with zero genuine candidates falls through to check_required_pages' own
     soft-404-specific CANNOT_VERIFY branch, never straight to "missing".
     """
-    homepage = site_map.pages[0] if site_map.pages else None
-    homepage_hash = compute_content_hash(homepage.text) if homepage and homepage.reachable else None
-    homepage_text = normalize_for_content_hash(homepage.text) if homepage and homepage.reachable else None
-
-    genuine: list[CrawledPage] = []
-    flagged: list[tuple[CrawledPage, str]] = []
-    for page in reachable:
-        candidate_hash = compute_content_hash(page.text)
-        candidate_text = normalize_for_content_hash(page.text)
-
-        if is_strong_content_match(
-            candidate_text, candidate_hash,
-            site_map.soft_404_baseline_normalized_text, site_map.soft_404_baseline_content_hash,
-        ):
-            flagged.append((page, "baseline"))
-            continue
-
-        # Never compare the homepage against itself - a candidate that IS
-        # the homepage (e.g. a misclassification) would trivially "match".
-        if homepage is not None and page.url != homepage.url and is_strong_content_match(
-            candidate_text, candidate_hash, homepage_text, homepage_hash,
-        ):
-            flagged.append((page, "homepage"))
-            continue
-
-        genuine.append(page)
-
+    flagged_urls = soft_404_flagged_page_urls(site_map)
+    genuine = [p for p in reachable if p.url not in flagged_urls]
+    flagged = [(p, flagged_urls[p.url]) for p in reachable if p.url in flagged_urls]
     return genuine, flagged
 
 

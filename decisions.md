@@ -171,10 +171,11 @@ relevant section (or a new one), at the time it's made — not reconstructed aft
     been redirected to that exact same `/lander` page. The new check correctly downgraded it to
     CANNOT_VERIFY ("content looks like a generic/catch-all page ... strongly matches a deliberately
     nonexistent URL probed during this audit") instead of silently accepting it as present. This
-    also live-confirmed the accepted-overlap tradeoff noted below: `check_policy_page_substance`
-    (LLM-graded) still ran on that same `/lander` page independently and produced its own,
-    redundant "Privacy policy page lacks required substance" finding alongside the new one -
-    exactly the predicted, accepted overlap, observed for real on the first live run.
+    also live-confirmed a real overlap: `check_policy_page_substance` (LLM-graded) still ran on
+    that same `/lander` page independently and produced its own, redundant "Privacy policy page
+    lacks required substance" finding alongside the new one. Initially accepted as a known,
+    low-cost tradeoff rather than fixed immediately - since fixed once confirmed live, not left as
+    permanent; see the follow-up entry below ("A soft-404-flagged page's content is left...").
 - **Reused the existing 0.92 `SequenceMatcher` near-duplicate threshold
   (`app.checks.duplicate_products`) rather than inventing a new one for this check.** That number
   has already been exercised against real stores in this project; a second, uncalibrated threshold
@@ -206,12 +207,32 @@ relevant section (or a new one), at the time it's made — not reconstructed aft
   was still added to the shared `FAILURE_CATEGORY_LABELS`/`_RECOMMENDATIONS` dicts (so its
   presentation matches every other category exactly), just referenced directly rather than routed
   through `CrawledPage.failure_category`.
-- **A soft-404-flagged page's content is left in `site_map.pages` untouched, not removed or masked.**
-  `check_policy_page_substance` (LLM-graded) may still run its own substance grading on that same
-  page independently, and could produce a redundant "lacks required substance" finding alongside
-  the new "could not be confirmed" one. Accepted as a known, minor, low-cost overlap rather than
-  adding cross-check-coordination to suppress it — not worth the added complexity for what's already
-  a hypothesis-driven, low-severity addition; flagged here rather than silently ignored.
+- **A soft-404-flagged page's content is left in `site_map.pages` untouched, not removed or masked**
+  — but the accepted-overlap tradeoff below was revisited and fixed once it was live-confirmed
+  (rather than left as a permanent accepted cost): `check_policy_page_substance` (LLM-graded) was
+  still running its own substance grading on the same page independently, producing a redundant
+  "lacks required substance" finding alongside the new "could not be confirmed" one - observed for
+  real on `leafloop.site`'s `/lander` page (which turned out to be a genuine GoDaddy parked-domain
+  page - the whole site's domain had actually expired). **Fixed** with a single shared function,
+  `app.soft_404_detection.soft_404_flagged_page_urls(site_map)`, computed fresh on every call (never
+  cached/mutated onto `SiteMap`, the same reasoning `SiteMap.crawl_totally_failed` already uses as a
+  property rather than a stored flag - one real function, never two independently-maintained copies
+  that could drift apart). `check_required_pages` and `run_llm_checks` both consult the exact same
+  set: a soft-404-flagged page is skipped entirely for LLM substance grading (and for
+  claim-vs-policy contradiction checking, where it's the *comparison target* being unconfirmed) -
+  not graded-with-a-caveat, since the deterministic layer's own CANNOT_VERIFY finding already fully
+  covers the page; adding a second, differently-worded CANNOT_VERIFY note would just be a milder
+  version of the same duplication. Re-run live against `leafloop.site` after the fix: the redundant
+  "lacks required substance" finding is gone; the one remaining LLM finding is a legitimate,
+  unrelated editorial-quality check on the *homepage itself* ("leafloop.site has expired and is
+  parked...") - correctly not suppressed, since it isn't a required-page-candidate grading.
+  - A real test-design pitfall found and fixed while building this: `run_llm_checks` wraps every
+    task in `asyncio.gather(..., return_exceptions=True)`, so a test using a single shared
+    FIFO-queue fake LLM client could pass "by accident" - a wrongly-attempted call crashes on a
+    missing/mismatched canned response, and `return_exceptions=True` swallows that crash exactly as
+    silently as a correctly-skipped call would look. Confirmed live during this fix's own
+    development (reverting the fix still passed one of the new tests). Fixed by having the fake
+    client dispatch by `tool_name` and track a real call count/log, not by response-list exhaustion.
 - **Confirmed (not rebuilt) that the LLM layer never independently decides page existence.** The
   spec asked to verify this rather than assume it. Checked directly: `app/graph.py`'s node order
   runs `deterministic_checks` strictly before `llm_grading`, and `run_llm_checks` only ever calls

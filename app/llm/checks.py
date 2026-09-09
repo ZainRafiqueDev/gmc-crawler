@@ -27,6 +27,7 @@ from app.llm.factory import get_llm_client
 from app.llm.policy_rag import get_policy_context
 from app.llm.policy_snippets import get_snippet
 from app.models import Confidence, CrawledPage, Finding, LLMCoverageStats, PageType, Severity, SiteMap
+from app.soft_404_detection import soft_404_flagged_page_urls
 
 logger = logging.getLogger("gmc_audit.llm.checks")
 
@@ -628,9 +629,16 @@ async def _claim_contradiction_tasks(
     a pre-filter-matched claim for. Nothing queued at all if the store has
     neither a shipping nor a returns policy page reachable - there is
     nothing to compare a claim against.
+
+    Excludes any policy page soft_404_flagged_page_urls has flagged (see
+    run_llm_checks) - comparing a real claim against a policy page whose own
+    identity is unconfirmed (its content might just be the homepage/a
+    catch-all template) would ground a "contradiction" verdict on content
+    that was never confirmed to be the real policy page at all.
     """
-    shipping_policy_pages = [p for p in site_map.pages_of_type(PageType.SHIPPING_POLICY) if p.reachable]
-    returns_policy_pages = [p for p in site_map.pages_of_type(PageType.RETURNS_POLICY) if p.reachable]
+    soft_404_flagged = soft_404_flagged_page_urls(site_map)
+    shipping_policy_pages = [p for p in site_map.pages_of_type(PageType.SHIPPING_POLICY) if p.reachable and p.url not in soft_404_flagged]
+    returns_policy_pages = [p for p in site_map.pages_of_type(PageType.RETURNS_POLICY) if p.reachable and p.url not in soft_404_flagged]
     if not shipping_policy_pages and not returns_policy_pages:
         return []
 
@@ -728,12 +736,20 @@ async def run_llm_checks(
     retrieval working.
     """
     total_product_pages = len([p for p in site_map.pages_of_type(PageType.PRODUCT) if p.reachable])
+    # Single shared source of truth (app/soft_404_detection.py, follow-up
+    # round Part 1) for "this page's identity is unconfirmed" - a page the
+    # deterministic layer already downgraded to CANNOT_VERIFY (soft-404/
+    # catch-all match) must not also get an independent LLM-graded
+    # substance verdict presented as a second, seemingly-corroborating
+    # signal in the same report. Computed once here, checked in both
+    # branches below and in _claim_contradiction_tasks.
+    soft_404_flagged = soft_404_flagged_page_urls(site_map)
 
     if not settings.llm_configured:
         findings: list[Finding] = []
         for page_type, policy_id in _POLICY_PAGE_CHECKS.items():
             for page in site_map.pages_of_type(page_type):
-                if not page.reachable:
+                if not page.reachable or page.url in soft_404_flagged:
                     continue
                 snippet = get_snippet(policy_id)
                 findings.append(Finding(
@@ -766,7 +782,7 @@ async def run_llm_checks(
 
     for page_type, policy_id in _POLICY_PAGE_CHECKS.items():
         for page in site_map.pages_of_type(page_type):
-            if page.reachable:
+            if page.reachable and page.url not in soft_404_flagged:
                 tasks.append(bounded(check_policy_page_substance(client, page, policy_id, settings, db, cache)))
 
     homepage = next((p for p in site_map.pages if p.page_type == PageType.HOMEPAGE and p.reachable), None)
