@@ -190,11 +190,25 @@ hierarchy to address it. Built instead as one small, targeted addition to the ex
 - **This one got a real live confirmation almost immediately anyway.** A routine smoke-test crawl of
   `leafloop.site` (not a deliberate hunt for this bug) hit a genuine instance on the first try: the
   audit's own nonexistent-URL probe got redirected to a real `/lander` catch-all page, and separately
-  a real crawled URL classified as that store's privacy policy had *also* been redirected there. The
-  new check correctly caught it — downgrading to CANNOT_VERIFY instead of silently treating the
-  catch-all page as genuinely present. It also confirmed, for real, a tradeoff accepted up front:
-  the LLM substance check still ran on that same page independently and produced its own redundant
-  "lacks required substance" finding alongside the new one — a known, accepted overlap, not a bug.
+  a real crawled URL classified as that store's privacy policy had *also* been redirected there — it
+  turned out `leafloop.site`'s domain had genuinely expired and is now a GoDaddy parked-domain page,
+  not a hypothetical. The new check correctly caught it — downgrading to CANNOT_VERIFY instead of
+  silently treating the catch-all page as genuinely present.
+- **That same live run surfaced a second, related bug: two checks disagreeing about one page.** The
+  soft-404-flagged page still got independently graded by `check_policy_page_substance`, which
+  produced its own, redundant "lacks required substance" finding alongside the new CANNOT_VERIFY one
+  — the exact same bug shape already fixed twice elsewhere in this project (two checks quietly
+  disagreeing about the same underlying fact). **Fixed** with a single shared function
+  (`app.soft_404_detection.soft_404_flagged_page_urls`) both `check_required_pages` and
+  `run_llm_checks` now consult — computed fresh each call, never cached, the same reasoning
+  `SiteMap.crawl_totally_failed` already uses as a property rather than a stored flag. A
+  soft-404-flagged page is now skipped entirely for LLM substance grading and for claim-vs-policy
+  contradiction checking (where it would otherwise be the *comparison target*), not
+  graded-with-a-caveat — the deterministic layer's own finding already covers it fully. Re-confirmed
+  live on the same `leafloop.site` page: the redundant finding is gone; the one remaining LLM
+  finding is a legitimate, unrelated editorial-quality check on the homepage itself
+  ("leafloop.site has expired and is parked..."), correctly left untouched since it isn't a
+  required-page-candidate grading at all.
 
 ## 9. Keeping stores under watch — history, deltas, and policy-triggered re-audits
 
@@ -210,25 +224,46 @@ area, since a newly added requirement can affect a store that was previously cle
 ## 10. The report itself — and why it got smaller
 
 Markdown is the source of truth; `.docx`/`.pdf` reuse the same limited parser (not general Markdown
-parsers - exactly the subset this project's own generator produces). A real full report against a
-large real catalog (`britanniagifts.us`) came out to 3,327 pages and 6,337 findings - nearly all of
-it a handful of repeated patterns (hardcoded links, missing alt text, broken images) logged as one
-fully-detailed finding *per instance* instead of aggregated the way the business-identity check
-already aggregated a phone-number inconsistency into one finding with a page list. Generalized that
-existing pattern (`app/finding_aggregation.py`) rather than inventing something new - three
-different real shapes needed three different aggregation keys (exact link value, link *domain*
-once social-share buttons were found to embed a different query string on every page, or the whole
-check_id when the same problem recurs across many genuinely distinct items). A parallel CSV export
-(`app/report_csv.py`) always contains every raw, unaggregated instance, so aggregating the
-human-readable report never costs anyone who needs the full detail.
+parsers - exactly the subset this project's own generator produces). The originally-reported problem
+(a different, uncapped crawl of a large real catalog, `britanniagifts.us`) came out to 3,327 pages
+and 6,337 findings - nearly all of it a handful of repeated patterns (hardcoded links, missing alt
+text, broken images) logged as one fully-detailed finding *per instance* instead of aggregated the
+way the business-identity check already aggregated a phone-number inconsistency into one finding
+with a page list. Generalized that existing pattern (`app/finding_aggregation.py`) rather than
+inventing something new - three different real shapes needed three different aggregation keys
+(exact link value, link *domain* once social-share buttons were found to embed a different query
+string on every page, or the whole check_id when the same problem recurs across many genuinely
+distinct items). A parallel CSV export (`app/report_csv.py`) always contains every raw,
+unaggregated instance, so aggregating the human-readable report never costs anyone who needs the
+full detail.
+
+**Real numbers, from a fresh live re-run of `britanniagifts.us`** (150 pages, this project's own
+adaptive page budget, not an artificially large crawl): **474 raw findings**, aggregated down to
+**24** in the human-readable report (**440 Markdown lines**, **21 PDF pages**). The CSV export
+contains **474 data rows** - matching the raw finding count exactly, confirming aggregation
+re-presents the data rather than losing any of it.
 
 ## 11. What's genuinely left
 
-Every engineering gap raised across every round to date — including this one — has been built,
-tested, and (with the one noted exception now itself live-confirmed) validated against real data
-from real stores. The one item left project-wide is the **accuracy validation set**: a ground-truth
-pass over 5 real stores that requires the user's own manual judgment call on each one — building
-that any other way would make this tool its own judge, which defeats the point of having it.
+Every specific engineering item raised across every round to date has been built, tested, and
+validated against real data from real stores - most recently, the soft-404/LLM-substance overlap
+(§8) and the real aggregation numbers (§10). Two honest things stated plainly rather than glossed
+over, not resolved by anything in this file:
+
+- **Several of these fixes currently rest on exactly one real confirming example each** - the
+  soft-404 detector (one real catch, `leafloop.site`), the annotated-screenshot mechanism (one real
+  working example, also `leafloop.site`), and purchase-journey validation (one self-built
+  WooCommerce sandbox, never a Shopify checkout or a second real WooCommerce store's different
+  theme/plugin combination). One real success is genuine evidence something *works*; it isn't yet
+  evidence it's *reliable* across the range of real stores this tool is meant to audit.
+- **The accuracy validation set** - a real, human, per-category ground-truth pass over 5 real
+  stores - remains the one item that has to be the user's own manual judgment call, not something
+  this tool can generate for itself without becoming its own judge.
+
+Also worth naming, not resolving: any claim of overall reliability here is a snapshot, not a
+permanent state - the RAG index depends on Google's policy pages staying as scraped, and a new
+failure mode can always show up on a store shape nobody's tried yet. The freshness watcher (§9)
+has to keep actually catching real changes over time to keep that snapshot current.
 
 ---
 
