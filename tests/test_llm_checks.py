@@ -135,7 +135,14 @@ async def test_prohibited_content_prompt_includes_counterfeit_guidance():
     is actually wired into the system prompt sent to the model - the real
     behavioral confirmation (a mere brand mention isn't flagged, genuine
     replica language is) needs a real LLM call, validated live separately,
-    not simulable with a fake client that just echoes canned responses."""
+    not simulable with a fake client that just echoes canned responses.
+
+    Extended in a later round with a client-provided banned-word list
+    (fake, imitation, cloned, dupe, copy) for premium/luxury/designer
+    sellers specifically - added to the existing guidance text rather than
+    a new keyword-match mechanism, keeping the same "never flag from a
+    word/brand mention alone" safeguard (several of these words, "copy" and
+    "fake" especially, are common in entirely unrelated, benign contexts)."""
     client = FakeClaudeClient([{
         "potentially_prohibited": False, "confidence": "confirmed", "matched_category": "", "evidence_quote": "", "reasoning": "",
     }])
@@ -144,6 +151,10 @@ async def test_prohibited_content_prompt_includes_counterfeit_guidance():
     system_prompt = client.calls[0][0]
     assert "brand name appearing on the page is NOT by itself evidence" in system_prompt
     assert "replica" in system_prompt and "1:1" in system_prompt and "AAA" in system_prompt
+    for word in ("fake", "imitation", "cloned", "dupe", "copy"):
+        assert word in system_prompt
+    # The safeguard must still cover the newly-added, ordinary-word-risk terms specifically.
+    assert "not evidence on its own" in system_prompt or "never from a watch-word" in system_prompt
 
 
 # --- Part 3 of the follow-up round: claim-vs-policy contradiction check --

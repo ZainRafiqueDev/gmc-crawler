@@ -278,6 +278,22 @@ relevant section (or a new one), at the time it's made — not reconstructed aft
   product page merely mentioning a brand for compatibility ("fits iPhone 14 case") is common and
   legitimate, and flagging on brand-name presence alone would swamp real signal with false
   positives.
+- **A client-provided counterfeit banned-word list (for premium/luxury/designer sellers) was folded
+  into the existing `_COUNTERFEIT_GUIDANCE` prompt text, not built as a separate keyword-match
+  check.** The client's list (replica, fake, knockoff, inspired by, imitation, cloned, dupe, copy,
+  mirror quality) mostly overlapped with guidance already in place; added the missing terms (fake,
+  imitation, cloned, dupe, copy) directly into the LLM's watch-list rather than a deterministic
+  regex ban-list — several of these words (especially "copy" and "fake") are extremely common in
+  entirely benign, unrelated contexts ("a copy of your invoice"), and a hard keyword match would
+  have reintroduced exactly the false-positive risk the existing "never flag from a brand mention
+  alone" safeguard was built to prevent. Extended that same safeguard to explicitly cover the new
+  words too, rather than assuming it would generalize on its own.
+  - **Live-validated, not just prompt-text-tested**: two genuinely risky product descriptions using
+    the new words ("a dupe for the iconic designer bag," "an exact copy... imitation... cloned...")
+    were both correctly flagged CRITICAL with the exact risky phrase as evidence; two benign uses of
+    the same words ("a copy of your invoice," a disclosed third-party phone case "compatible with
+    iPhone 14") were both correctly left unflagged - confirming the safeguard actually holds for the
+    newly-added terms, not just the original ones.
 
 ## RAG policy grounding
 

@@ -194,13 +194,22 @@ _ANTI_HALLUCINATION_SYSTEM_PREFIX = (
 # of counterfeiting on its own and must not be flagged from that alone.
 _COUNTERFEIT_GUIDANCE = (
     "When screening for counterfeit/brand-risk specifically, watch for language like: replica, 1:1, mirror "
-    "quality, AAA (as a quality-grade claim, not a battery size), knockoff, inspired by [brand] but sold as if "
-    "it were the real thing, or unauthorized use of a brand's logo/trademark presented as if it were an "
-    "official/licensed product. A brand name appearing on the page is NOT by itself evidence of counterfeiting - "
-    "many entirely legitimate products reference a brand for compatibility, comparison, or accessory fit (e.g. "
-    "\"compatible with iPhone 14,\" \"fits Dyson V8,\" \"works with Apple AirPods\"). Only flag when the page's own "
+    "quality, AAA (as a quality-grade claim, not a battery size), knockoff, fake, imitation, cloned, dupe, "
+    "copy/copies (as a claim the product reproduces another brand's design or is a stand-in for it - "
+    "'discount fragrance dupe for [Designer Brand]' is squarely this, an ordinary phrase like 'copy this "
+    "discount code' or 'a copy of your invoice' is not), or inspired by [brand] but sold as if it were the "
+    "real thing, or unauthorized use of a brand's logo/trademark presented as if it were an official/licensed "
+    "product. This applies with extra weight to premium/luxury/designer goods specifically, where this kind of "
+    "language is Google's own explicitly named counterfeit-and-copyright-infringement risk - client "
+    "instruction, added after this exact banned-word list (replica, fake, knockoff, inspired by, imitation, "
+    "cloned, dupe, copy, mirror quality) was flagged as a real, current compliance requirement for luxury "
+    "sellers. A brand name appearing on the page is NOT by itself evidence of counterfeiting - many entirely "
+    "legitimate products reference a brand for compatibility, comparison, or accessory fit (e.g. "
+    "\"compatible with iPhone 14,\" \"fits Dyson V8,\" \"works with Apple AirPods\"), and any of the words above "
+    "used in an ordinary, unrelated sense (e.g. \"copy\" meaning a document, \"fake\" used dismissively about "
+    "something unrelated to the product) is likewise not evidence on its own. Only flag when the page's own "
     "text gives a real, specific reason to suspect the product is not genuine or is being misrepresented as "
-    "another brand's - never from a brand mention alone."
+    "another brand's - never from a watch-word or brand mention alone."
 )
 
 

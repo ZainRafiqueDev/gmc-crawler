@@ -215,6 +215,17 @@ Each entry: what was touched, and — critically — whether it changed *what ca
 internal logic). Newest first. See `decisions.md` for the reasoning behind each; see `last.md` for
 the full narrative.
 
+### Cycle: counterfeit banned-word list (client requirement, premium/luxury/designer sellers)
+- **`app/llm/checks.py`**: `_COUNTERFEIT_GUIDANCE` (the prompt text `check_prohibited_content`
+  passes to the model) extended with a client-provided banned-word list (fake, imitation, cloned,
+  dupe, copy - replica/knockoff/inspired by/mirror quality already covered) plus explicit
+  negation-safety wording for the newly-added, common-in-benign-contexts words. No new function, no
+  new call site, no new check_id - same `llm_prohibited_content` check, same call
+  (`run_llm_checks` → `check_prohibited_content` → `client.call_tool(...)`), richer system prompt
+  text only.
+- Live-validated with two real LLM calls each way (risky vs. benign use of the same new words) -
+  see decisions.md for the actual evidence quotes returned.
+
 ### Cycle: soft-404/LLM-substance redundant-finding fix
 - **New shared function**: `app/soft_404_detection.py::soft_404_flagged_page_urls(site_map)` -
   extracted from (and now the single implementation behind) `app/checks/deterministic.py`'s
