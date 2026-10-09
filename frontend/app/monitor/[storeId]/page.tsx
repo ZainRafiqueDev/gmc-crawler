@@ -7,6 +7,14 @@ import { getLatestReport, rerunStoreAudit, latestReportDownloadUrl, LatestReport
 import { fadeUp, staggerContainer, staggerItem } from "@/lib/motion";
 import ReportView from "@/components/ReportView";
 import MajorOnlyToggle from "@/components/MajorOnlyToggle";
+import ScrollReveal from "@/components/ScrollReveal";
+
+function handleSpotlight(e: React.MouseEvent<HTMLElement>) {
+  const el = e.currentTarget;
+  const rect = el.getBoundingClientRect();
+  el.style.setProperty("--spot-x", `${e.clientX - rect.left}px`);
+  el.style.setProperty("--spot-y", `${e.clientY - rect.top}px`);
+}
 
 function triggerLabel(trigger: string): string {
   if (trigger.startsWith("policy_change:")) {
@@ -120,18 +128,18 @@ export default function StoreLatestReportPage() {
           {rerunning ? "Starting audit..." : "Re-run audit now"}
         </motion.button>
       </motion.div>
-      {rerunError && <p className="text-sm text-red-600 mb-4">{rerunError}</p>}
+      {rerunError && <p className="text-sm text-red-600 dark:text-red-400 mb-4">{rerunError}</p>}
 
       {loadError && (
-        <motion.p variants={fadeUp} className="text-slate-600 mt-4">
+        <motion.p variants={fadeUp} className="text-slate-500 dark:text-slate-400 mt-4">
           {loadError}
         </motion.p>
       )}
-      {!loadError && !report && <p className="text-slate-600 mt-4">Loading...</p>}
+      {!loadError && !report && <p className="text-slate-500 dark:text-slate-400 mt-4">Loading...</p>}
 
       {selectedRunId && (
         <motion.div variants={staggerItem} className="glass-card rounded-xl px-4 py-3 mb-4 flex items-center justify-between">
-          <p className="text-sm text-slate-600 dark:text-slate-300">
+          <p className="text-sm text-slate-500 dark:text-slate-400">
             Showing run #{selectedRunId} - not the latest.
           </p>
           <button onClick={backToLatest} className="text-sm font-medium underline">
@@ -142,7 +150,7 @@ export default function StoreLatestReportPage() {
 
       {!selectedRunId && report && (
         <>
-          <motion.p variants={staggerItem} className="text-slate-600 dark:text-slate-300 mb-4">
+          <motion.p variants={staggerItem} className="text-slate-500 dark:text-slate-400 mb-4">
             {report.run_type} audit, triggered by {triggerLabel(report.trigger)} - started{" "}
             {new Date(report.started_at).toLocaleString()}
             {report.finished_at ? `, finished ${new Date(report.finished_at).toLocaleString()}` : ""}
@@ -161,29 +169,31 @@ export default function StoreLatestReportPage() {
             <DownloadButton href={latestReportDownloadUrl(Number(storeId), "csv")}>Download full detail (.csv)</DownloadButton>
           </motion.div>
 
-          <motion.div variants={staggerItem} className="glass-card rounded-xl p-4">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={majorOnly ? "major" : "full"}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.2 }}
-              >
-                <ReportView markdown={activeMarkdown ?? ""} />
-              </motion.div>
-            </AnimatePresence>
-          </motion.div>
+          <ScrollReveal>
+            <motion.div variants={staggerItem} onMouseMove={handleSpotlight} className="spotlight-card glass-card rounded-xl p-4">
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={majorOnly ? "major" : "full"}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <ReportView markdown={activeMarkdown ?? ""} />
+                </motion.div>
+              </AnimatePresence>
+            </motion.div>
+          </ScrollReveal>
         </>
       )}
 
       {selectedRunId && (
         <>
-          {selectedRunLoading && <p className="text-slate-600">Loading run #{selectedRunId}...</p>}
-          {selectedRunError && <p className="text-sm text-red-600">{selectedRunError}</p>}
+          {selectedRunLoading && <p className="text-slate-500 dark:text-slate-400">Loading run #{selectedRunId}...</p>}
+          {selectedRunError && <p className="text-sm text-red-600 dark:text-red-400">{selectedRunError}</p>}
           {selectedRun && (
             <>
-              <motion.p variants={staggerItem} className="text-slate-600 dark:text-slate-300 mb-4">
+              <motion.p variants={staggerItem} className="text-slate-500 dark:text-slate-400 mb-4">
                 {selectedRun.run_type} audit, triggered by {triggerLabel(selectedRun.trigger)} - started{" "}
                 {new Date(selectedRun.started_at).toLocaleString()}
                 {" - "}
@@ -203,9 +213,11 @@ export default function StoreLatestReportPage() {
                 )}
               </motion.div>
 
-              <motion.div variants={staggerItem} className="glass-card rounded-xl p-4">
-                <ReportView markdown={historicalMarkdown ?? ""} />
-              </motion.div>
+              <ScrollReveal>
+                <motion.div variants={staggerItem} onMouseMove={handleSpotlight} className="spotlight-card glass-card rounded-xl p-4">
+                  <ReportView markdown={historicalMarkdown ?? ""} />
+                </motion.div>
+              </ScrollReveal>
             </>
           )}
         </>
@@ -213,8 +225,8 @@ export default function StoreLatestReportPage() {
 
       <motion.div variants={staggerItem} className="mt-10">
         <h2 className="text-lg font-semibold mb-2">Audit history</h2>
-        {runs === null && <p className="text-slate-600">Loading history...</p>}
-        {runs !== null && runs.length === 0 && <p className="text-slate-600">No runs recorded yet.</p>}
+        {runs === null && <p className="text-slate-500 dark:text-slate-400">Loading history...</p>}
+        {runs !== null && runs.length === 0 && <p className="text-slate-500 dark:text-slate-400">No runs recorded yet.</p>}
         {runs !== null && runs.length > 0 && (
           <p className="text-xs text-slate-500 mb-2">
             Showing the {runs.length} most recently retained run(s) for this store - older runs are pruned per the retention policy.
@@ -225,7 +237,8 @@ export default function StoreLatestReportPage() {
             <li key={run.id}>
               <button
                 onClick={() => handleSelectRun(run.id)}
-                className={`w-full text-left glass-card rounded-lg px-3 py-2 text-sm transition-colors hover:bg-brand-1-soft ${
+                onMouseMove={handleSpotlight}
+                className={`spotlight-card w-full text-left glass-card rounded-lg px-3 py-2 text-sm transition-colors hover:bg-brand-1-soft ${
                   selectedRunId === run.id ? "ring-2 ring-brand-1" : ""
                 }`}
               >

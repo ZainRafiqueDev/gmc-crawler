@@ -40,17 +40,17 @@ export default function RegisterMonitoringForm({ defaultUrl }: { defaultUrl: str
           key="result"
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-green-50 border border-green-200 rounded-xl p-4 text-sm"
+          className="bg-green-50 dark:bg-green-950/40 border border-green-200 dark:border-green-900 rounded-xl p-4 text-sm"
         >
-          <p className="text-green-800 font-medium mb-1">
+          <p className="text-green-800 dark:text-green-400 font-medium mb-1">
             Registered for monitoring (store #{result.id}).
           </p>
-          <p className="text-green-700">
+          <p className="text-green-700 dark:text-green-300">
             {result.url} will be checked in <strong>{result.mode}</strong> mode
             {result.interval_days ? ` every ${result.interval_days} day(s)` : ""}.
             {result.on_policy_change ? " It will also re-audit whenever a tracked GMC policy page changes." : ""}
           </p>
-          <Link href="/monitor" className="text-green-800 underline mt-2 inline-block">
+          <Link href="/monitor" className="text-green-800 dark:text-green-400 underline mt-2 inline-block">
             View monitored stores
           </Link>
         </motion.div>
@@ -100,12 +100,12 @@ export default function RegisterMonitoringForm({ defaultUrl }: { defaultUrl: str
             disabled={submitting}
             whileHover={{ scale: submitting ? 1 : 1.02 }}
             whileTap={{ scale: submitting ? 1 : 0.98 }}
-            className="text-white rounded-lg px-4 py-2 font-medium disabled:opacity-50 w-fit shadow-lg shadow-indigo-500/20"
+            className="text-white rounded-lg px-4 py-2 font-medium disabled:opacity-50 w-fit"
             style={{ background: "linear-gradient(90deg, var(--brand-1), var(--brand-2))" }}
           >
             {submitting ? "Registering..." : "Register for monitoring"}
           </motion.button>
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
         </motion.form>
       )}
     </AnimatePresence>

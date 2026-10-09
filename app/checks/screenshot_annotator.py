@@ -34,7 +34,7 @@ from playwright.async_api import Browser, TimeoutError as PlaywrightTimeoutError
 
 from app.config import Settings
 from app.fetch import BROWSER_USER_AGENT, STEALTH_INIT_SCRIPT, STEALTH_VIEWPORT
-from app.models import Finding
+from app.models import Finding, Severity
 from app.report import is_suspension_risk_finding
 from app.security.ssrf_guard import install_ssrf_guard
 
@@ -44,12 +44,19 @@ _NAV_TIMEOUT_MS = 20_000
 _SETTLE_TIMEOUT_MS = 5_000
 _CROP_MARGIN_PX = 40
 _MAX_SCREENSHOT_WIDTH_PX = 1200
-_JPEG_QUALITY = 82
+_WEBP_QUALITY = 82
 
 # LLM checks that grade an image (not page text) have nothing for a
 # text-quote DOM search to find - excluded, not just naturally non-matching.
 _TEXT_QUOTE_CHECK_PREFIX = "llm_"
 _EXCLUDED_LLM_CHECKS = {"llm_image_vision_check"}
+
+# Evidence-storage round: screenshots are expensive (a second live-browser
+# visit per page) and are only ever defensible evidence for a genuinely
+# serious finding - gated by settings.screenshots_only_critical (default
+# True) so a LOW/MEDIUM-severity finding never triggers a capture at all,
+# not just "captures but gets pruned later."
+_SCREENSHOT_WORTHY_SEVERITIES = {Severity.CRITICAL, Severity.HIGH}
 
 _QUOTE_RE = re.compile(r'"([^"]{8,})"')
 
@@ -103,7 +110,9 @@ _FIND_QUOTE_JS = """
 """
 
 
-def _is_screenshot_eligible(f: Finding) -> bool:
+def _is_screenshot_eligible(f: Finding, settings: Settings) -> bool:
+    if settings.screenshots_only_critical and f.severity not in _SCREENSHOT_WORTHY_SEVERITIES:
+        return False
     return (
         is_suspension_risk_finding(f)
         and f.check_id.startswith(_TEXT_QUOTE_CHECK_PREFIX)
@@ -137,7 +146,12 @@ def _safe_slug(text: str, max_len: int = 60) -> str:
     return slug[:max_len] or "finding"
 
 
-async def _capture_one(page, quotes: list[str], out_path: Path) -> bool:
+async def _locate_and_capture_bytes(page, quotes: list[str]) -> bytes | None:
+    """Core capture mechanics, shared by the file-writing path (_capture_one,
+    the old pipeline's Finding.screenshot_path) and the blob-returning path
+    (capture_finding_screenshot_bytes, the First Audit pipeline's
+    FindingRecord.screenshot_blob_hash) - one implementation of "find the
+    quote, crop around it, encode as WebP", never two."""
     for quote in quotes:
         try:
             box = await page.evaluate(_FIND_QUOTE_JS, quote)
@@ -163,15 +177,84 @@ async def _capture_one(page, quotes: list[str], out_path: Path) -> bool:
             logger.warning("Screenshot capture failed after locating quote: %s", exc)
             continue
 
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with Image.open(io.BytesIO(png_bytes)) as im:
-            im = im.convert("RGB")
-            if im.width > _MAX_SCREENSHOT_WIDTH_PX:
-                ratio = _MAX_SCREENSHOT_WIDTH_PX / im.width
-                im = im.resize((_MAX_SCREENSHOT_WIDTH_PX, max(1, int(im.height * ratio))))
-            im.save(out_path, format="JPEG", quality=_JPEG_QUALITY, optimize=True)
-        return True
-    return False
+        return _resize_and_encode_webp(png_bytes)
+    return None
+
+
+async def _capture_one(page, quotes: list[str], out_path: Path) -> bool:
+    data = await _locate_and_capture_bytes(page, quotes)
+    if data is None:
+        return False
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(data)
+    return True
+
+
+async def _visit_for_screenshot(browser: Browser, page_url: str):
+    """Opens one stealth-configured, SSRF-guarded context/page and navigates
+    to page_url (networkidle-with-bounded-fallback, same as PageFetcher) -
+    shared second-visit setup for both screenshot entry points. Returns
+    (context, page) on success; caller is responsible for closing context.
+    Raises on navigation failure - callers decide how to handle/log that.
+    """
+    context = await browser.new_context(
+        user_agent=BROWSER_USER_AGENT, viewport=STEALTH_VIEWPORT,
+        locale="en-US", extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+    )
+    try:
+        await context.add_init_script(STEALTH_INIT_SCRIPT)
+        await install_ssrf_guard(context)
+        page = await context.new_page()
+        await page.goto(page_url, timeout=_NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+    except Exception:
+        # Navigation (or setup) failed before returning the context to the
+        # caller - nothing will ever call context.close() for us, so this
+        # function must clean up its own partially-opened context rather
+        # than leaking it.
+        await context.close()
+        raise
+
+    try:
+        await page.wait_for_load_state("networkidle", timeout=_SETTLE_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        logger.debug("networkidle timed out for screenshot second-visit to %s - using domcontentloaded snapshot", page_url)
+    return context, page
+
+
+async def capture_finding_screenshot_bytes(browser: Browser, page_url: str, quotes: list[str]) -> bytes | None:
+    """Single-URL screenshot capture for the First Audit pipeline
+    (app.first_audit, work-order step 4 piece 4) - returns raw WebP bytes for
+    Tier 2 blob storage (app.evidence_blob_store.write_blob_if_needed)
+    instead of writing a file. Caller is responsible for the
+    settings.screenshots_only_critical / severity gate - this function
+    always attempts a capture once called, same "mechanism vs. policy"
+    split as the rest of this module.
+    """
+    try:
+        context, page = await _visit_for_screenshot(browser, page_url)
+    except Exception as exc:  # noqa: BLE001 - a failed second visit just means no screenshot for this finding, not an audit failure
+        logger.warning("Screenshot second-visit failed for %s: %s", page_url, exc)
+        return None
+
+    try:
+        return await _locate_and_capture_bytes(page, quotes)
+    finally:
+        await context.close()
+
+
+def _resize_and_encode_webp(png_bytes: bytes) -> bytes:
+    """Shared by both the file-writing path above and the Tier-2-blob path
+    (app.evidence_store, work-order step 4 piece 4) - WebP, not PNG/JPEG
+    (evidence-storage round: smaller than either at equivalent quality, and
+    the explicit format this round asked for)."""
+    with Image.open(io.BytesIO(png_bytes)) as im:
+        im = im.convert("RGB")
+        if im.width > _MAX_SCREENSHOT_WIDTH_PX:
+            ratio = _MAX_SCREENSHOT_WIDTH_PX / im.width
+            im = im.resize((_MAX_SCREENSHOT_WIDTH_PX, max(1, int(im.height * ratio))))
+        buf = io.BytesIO()
+        im.save(buf, format="WEBP", quality=_WEBP_QUALITY)
+        return buf.getvalue()
 
 
 async def capture_annotated_screenshots(
@@ -187,7 +270,7 @@ async def capture_annotated_screenshots(
     safe-for-filenames host) keeps filenames from colliding across stores
     audited into the same report_output_dir.
     """
-    eligible = [f for f in findings if _is_screenshot_eligible(f)]
+    eligible = [f for f in findings if _is_screenshot_eligible(f, settings)]
     if not eligible:
         return findings
 
@@ -230,7 +313,7 @@ async def capture_annotated_screenshots(
 
             for i, f in enumerate(page_findings):
                 quotes = _candidate_quotes(f.evidence)
-                filename = f"{filename_prefix}-{_safe_slug(urlparse(page_url).path)}-{f.check_id}-{i}-{timestamp}.jpg"
+                filename = f"{filename_prefix}-{_safe_slug(urlparse(page_url).path)}-{f.check_id}-{i}-{timestamp}.webp"
                 relative_path = f"screenshots/{filename}"
                 out_path = report_output_dir / relative_path
                 found = await _capture_one(page, quotes, out_path)

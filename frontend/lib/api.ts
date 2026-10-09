@@ -1,6 +1,12 @@
 // Thin client for the FastAPI backend (app/api/main.py). Types mirror
 // app/api/schemas.py - kept minimal and hand-written since the backend
 // surface is small and stable rather than pulling in an OpenAPI codegen step.
+//
+// Every one of these routes is now require_admin-gated (whole-app admin
+// gating round) - every fetch() call here passes `credentials: "include"` so
+// the session cookie set by lib/admin-api.ts's login() actually gets sent;
+// without it the browser silently drops the cookie on every cross-origin
+// request to the API and every call here 403s even while logged in.
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8010";
 
@@ -74,7 +80,7 @@ export type AuditRunDetail = {
   findings_count: number;
 };
 
-async function asJson<T>(res: Response): Promise<T> {
+export async function asJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -99,6 +105,7 @@ export class ApiError extends Error {
 export async function createAudit(url: string, maxPages?: number): Promise<{ job_id: string }> {
   const res = await fetch(`${API_BASE}/api/audits`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url, max_pages: maxPages }),
   });
@@ -106,7 +113,7 @@ export async function createAudit(url: string, maxPages?: number): Promise<{ job
 }
 
 export async function getAuditStatus(jobId: string): Promise<AuditJobStatus> {
-  const res = await fetch(`${API_BASE}/api/audits/${jobId}`);
+  const res = await fetch(`${API_BASE}/api/audits/${jobId}`, { credentials: "include" });
   return asJson(res);
 }
 
@@ -133,6 +140,7 @@ export async function registerStore(params: {
 }): Promise<MonitoredStore> {
   const res = await fetch(`${API_BASE}/api/monitor/stores`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
@@ -140,33 +148,33 @@ export async function registerStore(params: {
 }
 
 export async function listStores(): Promise<MonitoredStore[]> {
-  const res = await fetch(`${API_BASE}/api/monitor/stores`);
+  const res = await fetch(`${API_BASE}/api/monitor/stores`, { credentials: "include" });
   return asJson(res);
 }
 
 export async function removeStore(storeId: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/monitor/stores/${storeId}`, { method: "DELETE" });
+  const res = await fetch(`${API_BASE}/api/monitor/stores/${storeId}`, { method: "DELETE", credentials: "include" });
   if (!res.ok && res.status !== 204) {
     throw new ApiError(res.status, res.statusText);
   }
 }
 
 export async function getLatestReport(storeId: number): Promise<LatestReport> {
-  const res = await fetch(`${API_BASE}/api/monitor/stores/${storeId}/latest-report`);
+  const res = await fetch(`${API_BASE}/api/monitor/stores/${storeId}/latest-report`, { credentials: "include" });
   return asJson(res);
 }
 
 export async function rerunStoreAudit(storeId: number): Promise<{ job_id: string }> {
-  const res = await fetch(`${API_BASE}/api/monitor/stores/${storeId}/rerun`, { method: "POST" });
+  const res = await fetch(`${API_BASE}/api/monitor/stores/${storeId}/rerun`, { method: "POST", credentials: "include" });
   return asJson(res);
 }
 
 export async function listStoreRuns(storeId: number): Promise<AuditRunSummary[]> {
-  const res = await fetch(`${API_BASE}/api/monitor/stores/${storeId}/runs`);
+  const res = await fetch(`${API_BASE}/api/monitor/stores/${storeId}/runs`, { credentials: "include" });
   return asJson(res);
 }
 
 export async function getStoreRun(storeId: number, runId: number): Promise<AuditRunDetail> {
-  const res = await fetch(`${API_BASE}/api/monitor/stores/${storeId}/runs/${runId}`);
+  const res = await fetch(`${API_BASE}/api/monitor/stores/${storeId}/runs/${runId}`, { credentials: "include" });
   return asJson(res);
 }

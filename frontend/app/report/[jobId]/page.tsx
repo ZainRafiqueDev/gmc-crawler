@@ -8,6 +8,15 @@ import { fadeUp, staggerContainer, staggerItem } from "@/lib/motion";
 import ReportView from "@/components/ReportView";
 import RegisterMonitoringForm from "@/components/RegisterMonitoringForm";
 import MajorOnlyToggle from "@/components/MajorOnlyToggle";
+import ScrollReveal from "@/components/ScrollReveal";
+import AnimatedCounter from "@/components/AnimatedCounter";
+
+function handleSpotlight(e: React.MouseEvent<HTMLElement>) {
+  const el = e.currentTarget;
+  const rect = el.getBoundingClientRect();
+  el.style.setProperty("--spot-x", `${e.clientX - rect.left}px`);
+  el.style.setProperty("--spot-y", `${e.clientY - rect.top}px`);
+}
 
 const PHASES = [
   ["detect_platform", "Detecting platform"],
@@ -53,18 +62,18 @@ export default function ReportPage() {
   }, [jobId]);
 
   if (pollError && !job) {
-    return <p className="text-red-600">{pollError}</p>;
+    return <p className="text-red-600 dark:text-red-400">{pollError}</p>;
   }
   if (!job) {
-    return <p className="text-slate-600">Loading...</p>;
+    return <p className="text-slate-500 dark:text-slate-400">Loading...</p>;
   }
 
   if (job.status === "error") {
     return (
       <motion.div initial="hidden" animate="show" variants={fadeUp}>
         <h1 className="text-xl font-semibold mb-2">Audit failed</h1>
-        <p className="text-slate-600 mb-1">{job.url}</p>
-        <p className="text-red-600">{job.error}</p>
+        <p className="text-slate-500 dark:text-slate-400 mb-1">{job.url}</p>
+        <p className="text-red-600 dark:text-red-400">{job.error}</p>
       </motion.div>
     );
   }
@@ -74,7 +83,7 @@ export default function ReportPage() {
     return (
       <motion.div initial="hidden" animate="show" variants={fadeUp}>
         <h1 className="text-xl font-semibold mb-1">Auditing {job.url}</h1>
-        <p className="text-slate-600 dark:text-slate-300 mb-6">This can take a minute or two for larger sites.</p>
+        <p className="text-slate-500 dark:text-slate-400 mb-6">This can take a minute or two for larger sites.</p>
         <ol className="flex flex-col gap-2">
           {PHASES.map(([key, label], i) => {
             const done = currentIndex > i;
@@ -97,7 +106,7 @@ export default function ReportPage() {
             );
           })}
         </ol>
-        {pollError && <p className="text-sm text-amber-600 mt-4">{pollError} - retrying...</p>}
+        {pollError && <p className="text-sm text-amber-600 dark:text-amber-400 mt-4">{pollError} - retrying...</p>}
       </motion.div>
     );
   }
@@ -112,26 +121,30 @@ export default function ReportPage() {
           {job.is_delta ? "Delta report" : "Audit report"}
         </h1>
         {job.is_delta && (
-          <span className="text-xs font-medium bg-blue-100 text-blue-800 rounded-full px-2.5 py-0.5">
+          <span className="text-xs font-medium bg-[var(--brand-1-soft)] text-sky-700 dark:text-sky-300 rounded-full px-2.5 py-0.5">
             changes since last run
           </span>
         )}
       </motion.div>
-      <motion.p variants={staggerItem} className="text-slate-600 dark:text-slate-300 mb-4">
+      <motion.p variants={staggerItem} className="text-slate-500 dark:text-slate-400 mb-4">
         {job.url}
       </motion.p>
 
       <motion.div variants={staggerItem} className="flex flex-wrap gap-4 mb-6 text-sm">
         <Stat
           label="GMC suspension risk"
-          value={job.suspension_risk_count ?? "-"}
+          value={job.suspension_risk_count != null ? <AnimatedCounter value={job.suspension_risk_count} /> : "-"}
           highlight={!!job.suspension_risk_count}
           emphasize
         />
         <Stat label="Platform" value={job.platform ?? "unknown"} />
-        <Stat label="Pages crawled" value={job.pages_crawled ?? "-"} />
-        <Stat label="Findings" value={job.findings_count ?? "-"} />
-        <Stat label="Critical" value={job.critical_count ?? "-"} highlight={!!job.critical_count} />
+        <Stat label="Pages crawled" value={job.pages_crawled != null ? <AnimatedCounter value={job.pages_crawled} /> : "-"} />
+        <Stat label="Findings" value={job.findings_count != null ? <AnimatedCounter value={job.findings_count} /> : "-"} />
+        <Stat
+          label="Critical"
+          value={job.critical_count != null ? <AnimatedCounter value={job.critical_count} /> : "-"}
+          highlight={!!job.critical_count}
+        />
       </motion.div>
 
       <motion.div variants={staggerItem} className="glass-card rounded-xl px-4 py-3 mb-6">
@@ -145,19 +158,24 @@ export default function ReportPage() {
         <DownloadButton href={reportDownloadUrl(jobId, "csv")}>Download full detail (.csv)</DownloadButton>
       </motion.div>
 
-      <motion.div variants={staggerItem} className="glass-card rounded-xl p-4 mb-8 max-h-[600px] overflow-y-auto">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={majorOnly ? "major" : "full"}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <ReportView markdown={activeMarkdown ?? ""} />
-          </motion.div>
-        </AnimatePresence>
-      </motion.div>
+      <ScrollReveal className="mb-8">
+        <motion.div
+          onMouseMove={handleSpotlight}
+          className="spotlight-card glass-card rounded-xl p-4 max-h-[600px] overflow-y-auto"
+        >
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={majorOnly ? "major" : "full"}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <ReportView markdown={activeMarkdown ?? ""} />
+            </motion.div>
+          </AnimatePresence>
+        </motion.div>
+      </ScrollReveal>
 
       {!job.is_delta && (
         <motion.div variants={staggerItem} className="border-t border-surface-border pt-6">
@@ -171,14 +189,15 @@ export default function ReportPage() {
 
 function Stat({
   label, value, highlight, emphasize,
-}: { label: string; value: string | number; highlight?: boolean; emphasize?: boolean }) {
+}: { label: string; value: React.ReactNode; highlight?: boolean; emphasize?: boolean }) {
   return (
     <motion.div
       whileHover={{ y: -2 }}
-      className={`glass-card rounded-lg px-3 py-2 min-w-[7rem] ${emphasize && highlight ? "ring-2 ring-red-400/60" : ""}`}
+      onMouseMove={handleSpotlight}
+      className={`spotlight-card glass-card rounded-lg px-3 py-2 min-w-[7rem] ${emphasize && highlight ? "ring-2 ring-red-400/60" : ""}`}
     >
       <div className="text-slate-500 dark:text-slate-400 text-xs">{label}</div>
-      <div className={`font-semibold ${highlight ? "text-red-600" : ""} ${emphasize ? "text-lg" : ""}`}>{value}</div>
+      <div className={`font-semibold ${highlight ? "text-red-600 dark:text-red-400" : ""} ${emphasize ? "text-lg" : ""}`}>{value}</div>
     </motion.div>
   );
 }

@@ -120,3 +120,45 @@ def test_markdown_table_renders_as_a_real_table_not_raw_pipe_text():
     assert "Shipping Policy" in text
     assert "| --- |" not in text
     assert "| Policy Area |" not in text
+
+
+def test_every_bold_span_in_a_line_is_bold_not_only_the_leading_one():
+    from app.report_pdf import _line_to_markup
+
+    markup = _line_to_markup("**Severity:** critical | **Risk level:** suspension_risk")
+    assert markup == "<b>Severity:</b> critical | <b>Risk level:</b> suspension_risk"
+    assert "**" not in markup
+
+
+def test_unpaired_asterisks_stay_literal_and_bold_content_is_still_escaped():
+    from app.report_pdf import _line_to_markup
+
+    assert _line_to_markup("price is 5** off") == "price is 5** off"
+    assert _line_to_markup("**a<b>** & c") == "<b>a&lt;b&gt;</b> &amp; c"
+
+
+def test_first_audit_pdf_has_no_literal_asterisks_in_any_finding_field():
+    """Every field _finding_markdown can emit - risk finding with an affected
+    URL and source link, plus an advisory - rendered through the real PDF path."""
+    from app.db import FindingRecord, FirstAuditRun
+    from app.first_audit_report import render_first_audit_report_markdown
+
+    run = FirstAuditRun(url="https://example.com", status="done", snapshot_status="CRITICAL", pages_crawled=150, platform="woocommerce", unreachable_pages_count=2)
+    risk = FindingRecord(
+        check_id="missing_returns_page", title="No returns/refund policy page found", severity="critical",
+        risk_level="suspension_risk", page_url="https://example.com/returns",
+        store_evidence="No reachable returns_policy page was found.", google_rule="Return and refund policy must be clearly stated",
+        consequence="This may result in potential suspension risk.", remediation="Publish a returns page.",
+        google_source_link="https://support.google.com/merchants/answer/10220642",
+    )
+    advisory = FindingRecord(
+        check_id="shipping_region_contradiction", title="Your pages state different shipping regions", severity="low",
+        risk_level="advisory", page_url="https://example.com/", store_evidence='homepage shows "Worldwide"; shipping_policy shows "US only"',
+        google_rule=None, consequence="This is not a Google Merchant Center policy violation.", remediation="Make them match.",
+    )
+    text = _extract_text(markdown_to_pdf_bytes(render_first_audit_report_markdown(run, [risk, advisory])))
+
+    assert "**" not in text
+    for label in ("Severity:", "Risk level:", "Affected URL:", "Google rule:", "What the store shows:",
+                  "Consequence:", "Recommended fix:", "Official source:", "Type:", "Store URL:", "Note:"):
+        assert label in text

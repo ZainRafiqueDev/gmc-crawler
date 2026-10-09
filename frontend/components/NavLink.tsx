@@ -10,7 +10,7 @@ export default function NavLink({ href, children }: { href: string; children: Re
   const active = pathname === href;
 
   return (
-    <Link href={href} className="relative text-sm text-slate-600 dark:text-slate-300 hover:text-foreground py-1 group">
+    <Link href={href} className="relative text-sm text-slate-500 dark:text-slate-400 hover:text-foreground py-1 group">
       {children}
       <span
         className="absolute left-0 -bottom-0.5 h-0.5 w-full origin-left rounded-full transition-transform duration-300 ease-out"

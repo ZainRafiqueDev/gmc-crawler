@@ -524,6 +524,54 @@ async def test_challenge_interstitial_that_never_resolves_is_bot_blocked():
 
 
 @pytest.mark.asyncio
+async def test_cloudflare_hard_block_page_is_bot_blocked_not_treated_as_real_content():
+    """Confirmed live on ridge.com: Cloudflare's permanent WAF block page
+    ("Sorry, you have been blocked") was served with HTTP 200, not 403/429 -
+    neither the existing status-code check nor _looks_like_challenge (which
+    only covers the *transient* "checking your browser"/"just a moment"
+    interstitial, not a hard, permanent block) caught it, so it was treated
+    as real page content. business_identity's phone regex then extracted
+    digit fragments from the Cloudflare Ray ID as if they were real phone
+    numbers - a real false positive this round fixes at the source: a hard
+    block must never reach CrawledPage as reachable text at all.
+
+    This must also never enter the wait-and-retry loop
+    (_wait_for_challenge_to_resolve) the way a transient challenge does -
+    waiting will never resolve a permanent block, and this tool does not
+    attempt to bypass one.
+    """
+    real_cloudflare_block_html = (
+        "<html><body>"
+        "Sorry, you have been blocked\n"
+        "You are unable to access ridge.com\n"
+        "Why have I been blocked?\n\n"
+        "This website is using a security service to protect itself from online attacks. "
+        "The action you just performed triggered the security solution. There are several "
+        "actions that could trigger this block including submitting a certain word or phrase, "
+        "a SQL command or malformed data.\n\n"
+        "What can I do to resolve this?\n\n"
+        "You can email the site owner to let them know you were blocked. Please include what "
+        "you were doing when this page came up and the Cloudflare Ray ID found at the bottom of "
+        "this page.\n\n"
+        "Cloudflare Ray ID: a47035266c258577 - Your IP: Click to reveal - Performance & security by Cloudflare"
+        "</body></html>"
+    )
+    page = _status_page(200, html=real_cloudflare_block_html)
+    page.url = "https://ridge.com/pages/privacy-policy"
+    browser = _make_browser_with_pages(lambda i: page)
+    fetcher = PageFetcher(browser, max_attempts=1, base_backoff_seconds=0.01, challenge_wait_seconds=0.05)
+
+    result = await fetcher.fetch("https://ridge.com/pages/privacy-policy")
+
+    assert result.ok is False
+    assert result.likely_bot_blocked is True
+    assert result.failure_category == "bot_blocked"
+    assert result.cannot_verify is True
+    assert result.text is None  # never extracted as real page text
+    assert result.html is None  # never handed downstream as content
+
+
+@pytest.mark.asyncio
 async def test_full_page_captcha_block_is_categorized_distinctly_from_generic_bot_block():
     captcha_html = (
         "<html><body><h1>Please verify you are human</h1>"

@@ -17,6 +17,10 @@ the event loop policy at import time does not help - uvicorn's reload
 subprocess re-creates the loop itself after import). Confirmed live. Plain
 `uvicorn ... --port 8010` (no --reload) uses ProactorEventLoop and starts
 fine; you just lose auto-reload-on-code-change during backend development.
+
+Run ONE worker only (no --workers N): the First Audit concurrency cap,
+duplicate-run lock and login rate limiters are per-process memory, so extra
+workers silently multiply/loosen all three. See the Dockerfile note.
 """
 from __future__ import annotations
 
@@ -25,7 +29,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
 from playwright.async_api import async_playwright
@@ -43,7 +47,13 @@ from app.api.schemas import (
     RegisterStoreRequest,
 )
 from app.config import load_settings
-from app.db import AuditRun, Database, MonitoredStore
+from app.api import auth as auth_routes
+from app.api import first_audit as first_audit_routes
+from app.auth.dependencies import require_admin
+from app.auth.seed import seed_admin
+from app.db import AuditRun, Database, MonitoredStore, User
+from app.evidence_retention import run_retention_job
+from app.evidence_storage import get_storage_adapter
 from app.graph import PHASE_LABELS
 from app.llm.cache import LLMCache
 from app.models import Finding
@@ -75,6 +85,7 @@ async def lifespan(app: FastAPI):
 
     db = Database(settings.database_url)
     await db.init()
+    await seed_admin(db, settings)
 
     scheduler = APSchedulerBackend()
     service = MonitorService(db=db, scheduler=scheduler, settings=settings, browser=browser)
@@ -85,6 +96,13 @@ async def lifespan(app: FastAPI):
     for store in stores:
         service.schedule_store(store)
     service.schedule_policy_watch(settings.default_policy_watch_interval_days)
+
+    evidence_adapter = get_storage_adapter(settings)
+
+    async def _run_evidence_retention() -> None:
+        await run_retention_job(db, evidence_adapter, settings)
+
+    service.scheduler.add_interval_job("evidence-retention", _run_evidence_retention, days=1)
     service.scheduler.start()
 
     jobs = JobStore(db, retention_days=settings.audit_job_retention_days)
@@ -120,7 +138,16 @@ app.add_middleware(
     allow_origins=[_cors_settings.api_cors_origin],
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type"],
+    # Session-cookie auth (First Audit admin routes) only reaches the
+    # browser's cookie jar cross-origin (frontend on a different port than
+    # this API) if the browser is told credentialed requests are allowed -
+    # without this, the session cookie set by /api/auth/login is silently
+    # dropped by the browser on every subsequent cross-origin request.
+    allow_credentials=True,
 )
+
+app.include_router(auth_routes.router)
+app.include_router(first_audit_routes.router)
 
 
 def _client_ip(request: Request) -> str:
@@ -130,7 +157,7 @@ def _client_ip(request: Request) -> str:
 # --- Audits -----------------------------------------------------------
 
 @app.post("/api/audits", response_model=CreateAuditResponse, status_code=202)
-async def create_audit(body: CreateAuditRequest, request: Request) -> CreateAuditResponse:
+async def create_audit(body: CreateAuditRequest, request: Request, _admin: User = Depends(require_admin)) -> CreateAuditResponse:
     limiter: RateLimiter = request.app.state.audit_rate_limiter
     if not await limiter.allow(_client_ip(request)):
         raise HTTPException(status_code=429, detail="Too many audit requests - please wait before trying again.")
@@ -159,7 +186,7 @@ async def create_audit(body: CreateAuditRequest, request: Request) -> CreateAudi
 
 
 @app.get("/api/audits/{job_id}", response_model=AuditJobStatus)
-async def get_audit_status(job_id: str, request: Request) -> AuditJobStatus:
+async def get_audit_status(job_id: str, request: Request, _admin: User = Depends(require_admin)) -> AuditJobStatus:
     jobs: JobStore = request.app.state.jobs
     job: AuditJob | None = await jobs.get(job_id)
     if job is None:
@@ -194,7 +221,7 @@ def _select_markdown(full: str | None, major_only_variant: str | None, major_onl
 
 
 @app.get("/api/audits/{job_id}/report.md")
-async def download_audit_report_md(job_id: str, request: Request, major_only: bool = False) -> PlainTextResponse:
+async def download_audit_report_md(job_id: str, request: Request, major_only: bool = False, _admin: User = Depends(require_admin)) -> PlainTextResponse:
     job = await _require_done_job(request, job_id)
     return PlainTextResponse(
         _select_markdown(job.report_markdown, job.report_markdown_major_only, major_only),
@@ -204,7 +231,7 @@ async def download_audit_report_md(job_id: str, request: Request, major_only: bo
 
 
 @app.get("/api/audits/{job_id}/report.docx")
-async def download_audit_report_docx(job_id: str, request: Request, major_only: bool = False) -> Response:
+async def download_audit_report_docx(job_id: str, request: Request, major_only: bool = False, _admin: User = Depends(require_admin)) -> Response:
     job = await _require_done_job(request, job_id)
     docx_bytes = markdown_to_docx_bytes(
         _select_markdown(job.report_markdown, job.report_markdown_major_only, major_only),
@@ -218,7 +245,7 @@ async def download_audit_report_docx(job_id: str, request: Request, major_only: 
 
 
 @app.get("/api/audits/{job_id}/report.pdf")
-async def download_audit_report_pdf(job_id: str, request: Request, major_only: bool = False) -> Response:
+async def download_audit_report_pdf(job_id: str, request: Request, major_only: bool = False, _admin: User = Depends(require_admin)) -> Response:
     job = await _require_done_job(request, job_id)
     pdf_bytes = markdown_to_pdf_bytes(
         _select_markdown(job.report_markdown, job.report_markdown_major_only, major_only),
@@ -232,7 +259,7 @@ async def download_audit_report_pdf(job_id: str, request: Request, major_only: b
 
 
 @app.get("/api/audits/{job_id}/report.csv")
-async def download_audit_report_csv(job_id: str, request: Request) -> Response:
+async def download_audit_report_csv(job_id: str, request: Request, _admin: User = Depends(require_admin)) -> Response:
     """Full-detail export (report-bloat follow-up round, Part 3): the
     Markdown/docx/PDF reports above render the aggregated view
     (app.finding_aggregation) - this is every raw finding instance the
@@ -262,7 +289,7 @@ async def _require_done_job(request: Request, job_id: str) -> AuditJob:
 # --- Monitoring ---------------------------------------------------------
 
 @app.post("/api/monitor/stores", response_model=MonitoredStoreResponse, status_code=201)
-async def register_store(body: RegisterStoreRequest, request: Request) -> MonitoredStoreResponse:
+async def register_store(body: RegisterStoreRequest, request: Request, _admin: User = Depends(require_admin)) -> MonitoredStoreResponse:
     service: MonitorService = request.app.state.service
     try:
         store = await service.register_store(
@@ -286,7 +313,7 @@ async def register_store(body: RegisterStoreRequest, request: Request) -> Monito
 
 
 @app.get("/api/monitor/stores", response_model=list[MonitoredStoreResponse])
-async def list_stores(request: Request) -> list[MonitoredStoreResponse]:
+async def list_stores(request: Request, _admin: User = Depends(require_admin)) -> list[MonitoredStoreResponse]:
     service: MonitorService = request.app.state.service
     stores = await service.list_stores()
 
@@ -307,7 +334,7 @@ async def list_stores(request: Request) -> list[MonitoredStoreResponse]:
 
 
 @app.post("/api/monitor/stores/{store_id}/rerun", response_model=CreateAuditResponse, status_code=202)
-async def rerun_store_audit(store_id: int, request: Request) -> CreateAuditResponse:
+async def rerun_store_audit(store_id: int, request: Request, _admin: User = Depends(require_admin)) -> CreateAuditResponse:
     """On-demand "re-run audit now" for an already-monitored store (Monitored
     Stores / Store Report screens). Goes through the exact same job-creation
     flow as a brand-new ad-hoc audit (same JobStore, same rate limiter) - the
@@ -334,7 +361,7 @@ async def rerun_store_audit(store_id: int, request: Request) -> CreateAuditRespo
 
 
 @app.delete("/api/monitor/stores/{store_id}", status_code=204)
-async def remove_store(store_id: int, request: Request) -> Response:
+async def remove_store(store_id: int, request: Request, _admin: User = Depends(require_admin)) -> Response:
     service: MonitorService = request.app.state.service
     await service.remove_store(store_id)
     return Response(status_code=204)
@@ -358,7 +385,7 @@ async def _get_latest_run_or_404(service: MonitorService, store_id: int) -> Audi
 
 
 @app.get("/api/monitor/stores/{store_id}/latest-report", response_model=LatestReportResponse)
-async def latest_report(store_id: int, request: Request) -> LatestReportResponse:
+async def latest_report(store_id: int, request: Request, _admin: User = Depends(require_admin)) -> LatestReportResponse:
     service: MonitorService = request.app.state.service
     run = await _get_latest_run_or_404(service, store_id)
     findings_count = len(json.loads(run.findings_json)) if run.findings_json else 0
@@ -372,7 +399,7 @@ async def latest_report(store_id: int, request: Request) -> LatestReportResponse
 
 
 @app.get("/api/monitor/stores/{store_id}/latest-report.md")
-async def download_latest_report_md(store_id: int, request: Request, major_only: bool = False) -> PlainTextResponse:
+async def download_latest_report_md(store_id: int, request: Request, major_only: bool = False, _admin: User = Depends(require_admin)) -> PlainTextResponse:
     service: MonitorService = request.app.state.service
     run = await _get_latest_run_or_404(service, store_id)
     return PlainTextResponse(
@@ -383,7 +410,7 @@ async def download_latest_report_md(store_id: int, request: Request, major_only:
 
 
 @app.get("/api/monitor/stores/{store_id}/latest-report.docx")
-async def download_latest_report_docx(store_id: int, request: Request, major_only: bool = False) -> Response:
+async def download_latest_report_docx(store_id: int, request: Request, major_only: bool = False, _admin: User = Depends(require_admin)) -> Response:
     service: MonitorService = request.app.state.service
     run = await _get_latest_run_or_404(service, store_id)
     docx_bytes = markdown_to_docx_bytes(
@@ -398,7 +425,7 @@ async def download_latest_report_docx(store_id: int, request: Request, major_onl
 
 
 @app.get("/api/monitor/stores/{store_id}/latest-report.pdf")
-async def download_latest_report_pdf(store_id: int, request: Request, major_only: bool = False) -> Response:
+async def download_latest_report_pdf(store_id: int, request: Request, major_only: bool = False, _admin: User = Depends(require_admin)) -> Response:
     service: MonitorService = request.app.state.service
     run = await _get_latest_run_or_404(service, store_id)
     pdf_bytes = markdown_to_pdf_bytes(
@@ -413,7 +440,7 @@ async def download_latest_report_pdf(store_id: int, request: Request, major_only
 
 
 @app.get("/api/monitor/stores/{store_id}/latest-report.csv")
-async def download_latest_report_csv(store_id: int, request: Request) -> Response:
+async def download_latest_report_csv(store_id: int, request: Request, _admin: User = Depends(require_admin)) -> Response:
     """Full-detail export, same as download_audit_report_csv - see that
     endpoint's docstring. No major_only param, same reasoning."""
     service: MonitorService = request.app.state.service
@@ -427,7 +454,7 @@ async def download_latest_report_csv(store_id: int, request: Request) -> Respons
 
 
 @app.get("/api/monitor/stores/{store_id}/runs", response_model=list[AuditRunSummary])
-async def list_store_runs(store_id: int, request: Request) -> list[AuditRunSummary]:
+async def list_store_runs(store_id: int, request: Request, _admin: User = Depends(require_admin)) -> list[AuditRunSummary]:
     """Audit-history list (Part 2.1) - every retained AuditRun for this
     store, newest first. Only ever as many entries as MonitorService's own
     retention policy actually keeps (audit_run_retention_count) - there is
@@ -454,7 +481,7 @@ async def list_store_runs(store_id: int, request: Request) -> list[AuditRunSumma
 
 
 @app.get("/api/monitor/stores/{store_id}/runs/{run_id}", response_model=AuditRunDetailResponse)
-async def get_store_run(store_id: int, run_id: int, request: Request) -> AuditRunDetailResponse:
+async def get_store_run(store_id: int, run_id: int, request: Request, _admin: User = Depends(require_admin)) -> AuditRunDetailResponse:
     """Full report (and delta vs. the previous run, if any) for one specific
     historical run - what a history-list entry opens into (Part 2.1)."""
     service: MonitorService = request.app.state.service

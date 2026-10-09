@@ -1,17 +1,42 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Tailwind v4 is media-query-based for `dark:` by default - switch it to
+   class-based so next-themes (components/ThemeProvider.tsx, attribute="class")
+   drives it via a `.dark`/`.light` class on <html>, not the visitor's OS
+   setting. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Whole-app theme: black + light-blue is the default (dark); a light variant
+   of the same brand palette lives under `.light` below. Both are reached via
+   the theme toggle in components/SiteHeader.tsx, defaulting to dark - this
+   was promoted from the First Audit section's scoped .fa-theme to the whole
+   app (every page is behind the same admin login now, so there's no more
+   "public indigo/fuchsia site" vs. "admin black/blue section" split to keep
+   two themes for). Brand color (#0ea5e9) matches the PDF report's own
+   existing brand color (app/first_audit_report.py's _BRAND). */
 :root {
-  --background: #f7f7fb;
-  --foreground: #16162a;
+  --background: #050810;
+  --foreground: #e3f2ff;
+  --surface: #0b0f1a;
+  --surface-border: #14304a;
+  --brand-1: #0ea5e9;
+  --brand-2: #38bdf8;
+  --brand-1-soft: #082a3d;
+  --brand-2-soft: #0a3348;
+  --brand-glow: color-mix(in srgb, var(--brand-1) 45%, transparent);
+}
+
+.light {
+  --background: #f7fbff;
+  --foreground: #0b1324;
   --surface: #ffffff;
-  --surface-border: #e5e4f5;
-  /* Dual-color brand palette: indigo -> fuchsia, inspired by the Framer AI
-     marketing site's gradient accent on a light, airy background. */
-  --brand-1: #4f46e5;
-  --brand-2: #d946ef;
-  --brand-1-soft: #eef2ff;
-  --brand-2-soft: #fdf4ff;
+  --surface-border: #d7e6f5;
+  --brand-1: #0ea5e9;
+  --brand-2: #0284c7;
+  --brand-1-soft: #e0f2fe;
+  --brand-2-soft: #dff5ff;
+  --brand-glow: color-mix(in srgb, var(--brand-1) 22%, transparent);
 }
 
 @theme inline {
@@ -27,17 +52,6 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0b0b16;
-    --foreground: #e9e9f7;
-    --surface: #14141f;
-    --surface-border: #2a2a3d;
-    --brand-1-soft: #1c1a3a;
-    --brand-2-soft: #33193a;
-  }
-}
-
 * {
   border-color: var(--surface-border);
 }
@@ -47,6 +61,20 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
   position: relative;
+}
+
+/* Faint fixed grid, under the aurora blobs - the "extensive dashboard"
+   texture cue (subtle structure behind the content, not a flat void). */
+.bg-grid {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--surface-border) 50%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--surface-border) 50%, transparent) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 40%, transparent 100%);
 }
 
 /* Soft, slow-drifting dual-color blobs behind everything - the "high CSS
@@ -106,13 +134,68 @@ body {
 }
 
 .glass-card {
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
   border: 1px solid var(--surface-border);
   backdrop-filter: blur(14px);
-  box-shadow: 0 1px 2px rgba(16, 15, 45, 0.04), 0 12px 32px -16px rgba(79, 70, 229, 0.18);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 12px 32px -16px var(--brand-glow);
 }
 
 .gradient-ring:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-1) 35%, transparent);
+}
+
+/* Spotlight card: a radial highlight that follows the cursor via two CSS
+   custom properties (--spot-x/--spot-y) a component sets on mousemove -
+   reactbits.dev-style flourish, done in a few lines of CSS rather than a
+   dependency, since it's just a masked gradient layered over glass-card. */
+.spotlight-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.spotlight-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  background: radial-gradient(
+    320px circle at var(--spot-x, 50%) var(--spot-y, 50%),
+    color-mix(in srgb, var(--brand-1) 18%, transparent),
+    transparent 70%
+  );
+}
+
+.spotlight-card:hover::before {
+  opacity: 1;
+}
+
+.spotlight-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Thin animated gradient border, for a card/section that should read as the
+   page's primary call-to-action rather than secondary chrome. */
+.gradient-border {
+  position: relative;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(120deg, var(--brand-1), var(--brand-2), var(--brand-1)) border-box;
+  background-size: 100% 100%, 200% 200%;
+  animation: gradient-border-drift 6s ease infinite;
+}
+
+@keyframes gradient-border-drift {
+  0%, 100% { background-position: 0% 0%, 0% 50%; }
+  50% { background-position: 0% 0%, 100% 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gradient-border {
+    animation: none;
+  }
 }

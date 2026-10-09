@@ -23,7 +23,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import HRFlowable, Image as RLImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-_BOLD_LEADING_RE = re.compile(r"^\*\*(.+?)\*\*(.*)$")
+_BOLD_SPAN_RE = re.compile(r"\*\*(.+?)\*\*")
 _SEVERITY_TAG_RE = re.compile(r"^(\[(CRITICAL|HIGH|MEDIUM|LOW)\])(.*)$")
 _SEVERITY_FIELD_RE = re.compile(r"^(Severity:\s*)(critical|high|medium|low)(.*)$", re.IGNORECASE)
 _TABLE_SEPARATOR_RE = re.compile(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$")
@@ -35,7 +35,7 @@ _MAX_IMAGE_WIDTH_IN = 5.5
 _FONT = "Helvetica"
 _FONT_BOLD = "Helvetica-Bold"
 _INK = HexColor("#1E1E2E")
-_BRAND = HexColor("#4F46E5")
+_BRAND = HexColor("#0EA5E9")  # light-blue accent token (black + light-blue theme) - was indigo (#4F46E5)
 _RULE = HexColor("#D9D9E3")
 
 _SEVERITY_COLOR = {
@@ -108,15 +108,21 @@ def _severity_aware_markup(text: str) -> str:
 
 def _line_to_markup(text: str) -> str:
     """Converts one already-html.unescape()'d line into reportlab Paragraph
-    markup: escape everything for reportlab's parser, except a **bold**
-    leading span (app/report.py's finding-title format), which becomes a
-    real <b> tag - handled the same way app/report_docx.py's _add_runs does.
+    markup: escape everything for reportlab's parser, except **bold** spans,
+    which become real <b> tags - every span in the line, not only a leading
+    one. Leading-only left a mid-line label as literal asterisks, e.g.
+    app/first_audit_report.py's "**Severity:** high | **Risk level:** ..."
+    rendered "**Risk level:**" verbatim on every finding. An unpaired "**"
+    (no closing pair) is left as literal text.
     """
-    match = _BOLD_LEADING_RE.match(text)
-    if match:
-        bold_part, rest = match.group(1), match.group(2)
-        return f"<b>{_escape_for_reportlab(bold_part)}</b>{_escape_for_reportlab(rest)}"
-    return _escape_for_reportlab(text)
+    parts: list[str] = []
+    last = 0
+    for match in _BOLD_SPAN_RE.finditer(text):
+        parts.append(_escape_for_reportlab(text[last:match.start()]))
+        parts.append(f"<b>{_escape_for_reportlab(match.group(1))}</b>")
+        last = match.end()
+    parts.append(_escape_for_reportlab(text[last:]))
+    return "".join(parts)
 
 
 def _split_table_row(line: str) -> list[str]:

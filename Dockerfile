@@ -19,4 +19,10 @@ COPY . .
 # Render sets $PORT at runtime; default to 8010 for local `docker run`.
 ENV PORT=8010
 EXPOSE 8010
+# SINGLE WORKER ON PURPOSE - do NOT add `--workers N` for throughput.
+# The First Audit concurrency cap, the duplicate-run lock and the login
+# brute-force limiters all live in process memory. Multiple workers silently
+# multiply the cap (N x first_audit_max_concurrent - the OOM guard), let the
+# same URL run twice, and loosen login rate limits N x. Nothing errors.
+# Move that state to Redis first (see decisions.md, "Rate-limiting gaps").
 CMD uvicorn app.api.main:app --host 0.0.0.0 --port ${PORT}

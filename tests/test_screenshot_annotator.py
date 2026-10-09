@@ -14,6 +14,7 @@ from app.checks.screenshot_annotator import (
     _is_screenshot_eligible,
     _safe_slug,
     capture_annotated_screenshots,
+    capture_finding_screenshot_bytes,
 )
 from app.config import Settings
 from app.models import Confidence, Finding, ImpactTier, Severity
@@ -32,7 +33,7 @@ def _finding(**overrides) -> Finding:
 # --- _is_screenshot_eligible -------------------------------------------
 
 def test_llm_suspension_risk_finding_with_quote_and_page_is_eligible():
-    assert _is_screenshot_eligible(_finding()) is True
+    assert _is_screenshot_eligible(_finding(), Settings()) is True
 
 
 def test_deterministic_aggregate_finding_is_never_eligible():
@@ -40,32 +41,47 @@ def test_deterministic_aggregate_finding_is_never_eligible():
     site-wide/aggregate and deterministic (no model-verified quote to
     anchor on) - scope already confirmed to skip these entirely."""
     f = _finding(check_id="business_identity_email_consistency", impact_tier=ImpactTier.SUSPENSION_RISK)
-    assert _is_screenshot_eligible(f) is False
+    assert _is_screenshot_eligible(f, Settings()) is False
 
 
 def test_non_suspension_risk_llm_finding_is_not_eligible():
     f = _finding(check_id="llm_editorial_quality", impact_tier=ImpactTier.QUALITY_IMPROVEMENT, severity=Severity.LOW)
-    assert _is_screenshot_eligible(f) is False
+    assert _is_screenshot_eligible(f, Settings()) is False
 
 
 def test_vision_check_is_explicitly_excluded_even_if_suspension_risk():
     f = _finding(check_id="llm_image_vision_check")
-    assert _is_screenshot_eligible(f) is False
+    assert _is_screenshot_eligible(f, Settings()) is False
 
 
 def test_cannot_verify_finding_is_not_eligible():
     f = _finding(confidence=Confidence.CANNOT_VERIFY)
-    assert _is_screenshot_eligible(f) is False
+    assert _is_screenshot_eligible(f, Settings()) is False
+
+
+def test_medium_severity_finding_excluded_when_screenshots_only_critical():
+    f = _finding(severity=Severity.MEDIUM)
+    assert _is_screenshot_eligible(f, Settings(screenshots_only_critical=True)) is False
+
+
+def test_medium_severity_finding_included_when_screenshots_only_critical_disabled():
+    f = _finding(severity=Severity.MEDIUM)
+    assert _is_screenshot_eligible(f, Settings(screenshots_only_critical=False)) is True
+
+
+def test_high_severity_finding_is_still_eligible_when_screenshots_only_critical():
+    f = _finding(severity=Severity.HIGH)
+    assert _is_screenshot_eligible(f, Settings(screenshots_only_critical=True)) is True
 
 
 def test_finding_with_no_page_url_is_not_eligible():
     f = _finding(page_url=None)
-    assert _is_screenshot_eligible(f) is False
+    assert _is_screenshot_eligible(f, Settings()) is False
 
 
 def test_finding_with_empty_evidence_is_not_eligible():
     f = _finding(evidence="")
-    assert _is_screenshot_eligible(f) is False
+    assert _is_screenshot_eligible(f, Settings()) is False
 
 
 # --- _candidate_quotes ---------------------------------------------------
@@ -137,8 +153,11 @@ async def test_eligible_finding_gets_screenshot_path_when_quote_is_located(tmp_p
 
     assert result[0].screenshot_path is not None
     assert result[0].screenshot_path.startswith("screenshots/shop-example-")
+    assert result[0].screenshot_path.endswith(".webp")  # evidence-storage round: WebP, not PNG/JPEG
     saved = tmp_path / result[0].screenshot_path
     assert saved.is_file()
+    with Image.open(saved) as im:
+        assert im.format == "WEBP"
     page.goto.assert_awaited_once()
 
 
@@ -248,3 +267,45 @@ async def test_navigation_failure_skips_that_pages_findings_without_raising(tmp_
 
     assert result[0].screenshot_path is None
     context.close.assert_awaited_once()  # context still cleaned up despite the failure
+
+
+# --- capture_finding_screenshot_bytes (First Audit pipeline, blob path) ----
+
+@pytest.mark.asyncio
+async def test_capture_finding_screenshot_bytes_returns_webp_bytes():
+    box = {"x": 10, "y": 10, "width": 100, "height": 40}
+    browser, context, page = _make_browser(evaluate_return=box)
+
+    data = await capture_finding_screenshot_bytes(browser, "https://shop.example/products/widget", ["AAA quality 1:1 mirror replica"])
+
+    assert data is not None
+    with Image.open(__import__("io").BytesIO(data)) as im:
+        assert im.format == "WEBP"
+    context.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_capture_finding_screenshot_bytes_returns_none_when_quote_not_found():
+    browser, context, page = _make_browser(evaluate_return=None)
+
+    data = await capture_finding_screenshot_bytes(browser, "https://shop.example/products/widget", ["not on the page"])
+
+    assert data is None
+    context.close.assert_awaited_once()  # still cleaned up
+
+
+@pytest.mark.asyncio
+async def test_capture_finding_screenshot_bytes_returns_none_on_navigation_failure():
+    context = MagicMock()
+    context.add_init_script = AsyncMock()
+    context.close = AsyncMock()
+    page = MagicMock()
+    page.goto = AsyncMock(side_effect=RuntimeError("navigation timeout"))
+    context.new_page = AsyncMock(return_value=page)
+    browser = MagicMock()
+    browser.new_context = AsyncMock(return_value=context)
+
+    data = await capture_finding_screenshot_bytes(browser, "https://shop.example/products/widget", ["quote"])
+
+    assert data is None
+    context.close.assert_awaited_once()  # the partially-opened context must not leak

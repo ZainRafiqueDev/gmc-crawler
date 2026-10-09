@@ -12,6 +12,15 @@ Every LLM-graded check cites real, live-scraped Google Merchant Center
 policy text via a real RAG index (Phase C - see below), not a hand-written
 stub summary.
 
+## What this has (and hasn't) been validated for
+
+> **Validated for PRECISION only — no false positives on clean stores. RECALL is unmeasured — never tested whether it catches a genuinely at-risk store. Website-only: cannot see feed- or account-level suspension causes. Every report must state the website-only limit plainly.**
+
+This is a standing fact about the product, not a task. It stays here until it is no
+longer true: until recall has been measured against stores with a known suspension
+reason, and/or feed/account data is an input. See `decisions.md`, "Standing truths about the
+product".
+
 ## Quick start
 
 ```bash
@@ -407,6 +416,13 @@ launch (`NotImplementedError` from `asyncio.create_subprocess_exec` at
 startup) - confirmed live. Restart the process manually after code changes
 instead.
 
+**Run exactly one worker - never add `--workers N`.** The First Audit
+concurrency cap (the OOM guard), the duplicate-run lock and the login
+brute-force limiters all live in process memory. With N workers the cap
+silently becomes N x `FIRST_AUDIT_MAX_CONCURRENT`, the same URL can be
+audited twice at once, and login limits loosen N x - nothing errors. Move
+that state to Redis before scaling out.
+
 `frontend/.env.local` points it at the backend
 (`NEXT_PUBLIC_API_BASE_URL=http://localhost:8010`); the backend's
 `API_CORS_ORIGIN` (default `http://localhost:3000`) must match wherever the
@@ -434,6 +450,59 @@ they're pruned by age instead: anything older than
 `AUDIT_JOB_RETENTION_DAYS` (default 30) is deleted the next time a job is
 created. Both are plain Settings fields, override via `.env` like anything
 else.
+
+### First Audit evidence storage (Tier 1/2/3) and retention
+
+The standalone First Audit pipeline (`app/first_audit.py`) keeps raw evidence
+out of Postgres entirely. Structured rows (`resources`, `resource_facts`,
+`products`, `rules`, `evaluations`, `findings`, `first_audit_runs`) are cheap
+and kept indefinitely; raw bodies, JSON-LD, and screenshots go to object
+storage via `app.evidence_storage`, referenced from a row only by content
+hash (`app.db.Blob`).
+
+**Switching backends** - set `EVIDENCE_BACKEND`:
+- `local` (default): `EVIDENCE_BUCKET` is a local directory (`./evidence` by
+  default), created automatically - zero cloud setup needed for dev.
+- `s3`: works against real AWS S3 or any S3-compatible endpoint (Cloudflare
+  R2, MinIO). Set `EVIDENCE_BUCKET` to the bucket name,
+  `EVIDENCE_S3_ENDPOINT_URL` for a non-AWS endpoint (leave blank for real
+  S3), and `EVIDENCE_S3_ACCESS_KEY_ID`/`EVIDENCE_S3_SECRET_ACCESS_KEY`. Needs
+  `boto3` installed (`pip install boto3`) - not required at all for the
+  local backend.
+
+**Dedup and compression**: every blob is keyed by the sha256 of its
+*uncompressed* content (`app.evidence_blob_store.write_blob_if_needed`) - the
+same content, however many resources/runs reference it, is ever only
+uploaded once; later writes just bump a refcount. Text blobs are compressed
+with `zstd` before upload (`EVIDENCE_COMPRESSION=zstd`, the default; falls
+back to `gzip` automatically if the `zstandard` package isn't installed, or
+set `EVIDENCE_COMPRESSION=gzip`/`none` explicitly).
+
+**PASS drops body**: a resource with no failing/needs-review rule evaluation
+never gets its raw HTML/JSON-LD uploaded at all - only its content hash and
+extracted facts are kept (`KEEP_BODY_ON_PASS=false`, the default). Only a
+failing or needs-review resource's body is stored as defensible evidence.
+Screenshots are likewise evidence only for critical/serious findings
+(`SCREENSHOTS_ONLY_CRITICAL=true`, the default).
+
+**Retention**: `app/evidence_retention.py`'s `run_retention_job` runs daily
+(scheduled in `app/api/main.py`'s `lifespan`, same `APSchedulerBackend` the
+policy watch job uses) and does two things:
+1. Ages out raw blobs for old first-audit runs - keeps a run's evidence if it
+   satisfies *either* configured axis, `EVIDENCE_RETENTION_DAYS` (default 90)
+   or `EVIDENCE_RETENTION_RUNS` (default unset); set either/both, or both to
+   blank to disable pruning entirely. Only `Resource.body_blob_hash`/
+   `jsonld_blob_hash`/`FindingRecord.screenshot_blob_hash` and the
+   now-unreferenced `Blob` rows are deleted - `resource_facts`, `evaluations`,
+   and `findings` themselves are never pruned.
+2. Caps the LLM result cache (`llm_cache_entries`) at `LLM_CACHE_MAX_ITEMS`
+   rows (default 50,000), deleting the oldest beyond that - in addition to
+   `LLMCache`'s existing 30-day staleness check on read.
+
+Note: first-audit runs aren't grouped by store this round (see
+`app/first_audit.py` - first audits are standalone, not linked to
+`MonitoredStore`), so `EVIDENCE_RETENTION_RUNS` ranks across *all* runs
+globally rather than per-store until a future round wires that link up.
 
 ## Known limitation
 

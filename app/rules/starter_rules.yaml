@@ -1,0 +1,228 @@
+# Starter rule set for the First Audit deterministic rule engine.
+#
+# This file is the SOURCE OF TRUTH. On startup, app/rules/loader.py loads and
+# validates every rule here against app/rules/schema.py's Rule model
+# (including, since this round, a hard check that every fact key/resource
+# type/method a condition references is a real, known value - see
+# app.rules.loader._validate_rule_against_registry), then upserts a mirror
+# row into the `rules` DB table (keyed by `id`) so `evaluations` and
+# `findings` can carry a stable foreign key. The DB table is never hand-
+# edited - if it disagrees with this file, this file wins and the table is
+# overwritten to match on the next startup.
+#
+# Fact keys below are the canonical dotted keys from
+# app/facts/canonical_facts.md (e.g. `return.window_days`, not
+# `return_window_days`) - renamed from this file's original draft names in
+# the same change that added the key-existence validation above, so there is
+# never a window where a rule references a key nothing produces.
+#
+# `sources`/`resource_type` values are app.models.PageType's actual string
+# values (e.g. "returns_policy", not "RETURNS_POLICY") - these are compared
+# directly against Resource.resource_type in the contradiction engine, which
+# stores PageType.value, not the enum member name.
+#
+# Condition vocabulary (deliberately small and fixed - no expression language,
+# no eval()):
+#   numeric_mismatch        - compare ONE canonical fact key across exactly
+#                              two extraction METHODS for the same resource
+#                              (app.contradiction_engine.evaluate_per_resource_
+#                              method_comparison); fires when they differ by
+#                              more than `tolerance`.
+#   cross_page_contradiction - compare the same fact key across a set of
+#                              page/resource types (app.contradiction_engine.
+#                              evaluate_cross_page_contradiction); fires when
+#                              two sources disagree.
+#   missing_resource        - fires when the site has zero reachable pages of
+#                              a given resource_type.
+#   all_missing              - fires when every fact in `fields` was never
+#                              extracted anywhere on the site.
+#   existing_check           - delegates entirely to a named existing Python
+#                              check function (no condition logic here); used
+#                              when a check already exists and should not be
+#                              reimplemented, per project policy.
+#
+# `impact` values reuse app.models.ImpactTier exactly (suspension_risk |
+# listing_disapproval | quality_improvement) so rule-engine findings need no
+# separate mapping step to work with apply_impact_tiers.
+#
+# `min_confidence` is the needs-review threshold from spec section 5: a
+# contradiction/mismatch whose extraction confidence falls below this value is
+# routed to "needs review" instead of surfaced to the merchant as a risk.
+# 1.0 marks a rule as not applicable (its condition is exact/structural, not a
+# confidence-bearing text inference).
+
+rules:
+  - id: price_mismatch_jsonld_vs_platform
+    scope: product
+    inputs:
+      - product.price.amount
+    condition:
+      type: numeric_mismatch
+      fact: product.price.amount
+      methods: [jsonld, platform_api]
+      tolerance: 0.01          # absolute currency-unit tolerance, same currency assumed
+    impact: listing_disapproval
+    severity: critical
+    min_confidence: 1.0
+    title: "Product price mismatch between structured data and platform"
+    policy_reference: "Accurate pricing / product data (Shopping ads data quality requirements)"
+    # Verified live (fetched, not guessed) - "How to fix: Inaccurate price
+    # status due to inconsistency between feed and landing page" explicitly
+    # names schema.org structured data (JSON-LD) as part of the check:
+    # "Make sure the price and availability attributes align with the
+    # structured data."
+    google_source_url: "https://support.google.com/merchants/answer/9773429"
+    description: >
+      The price in a product page's JSON-LD structured data does not match
+      the price returned by the store's own platform API (WooCommerce REST /
+      Shopify products.json) for the same product. Google disapproves
+      individual listings whose landing-page price doesn't match the
+      submitted price.
+    remediation: >
+      Update the product page's JSON-LD price (or the platform's own product
+      price) so both sources show the exact same price for this product,
+      then re-submit the product to Google Merchant Center.
+
+  - id: shipping_region_contradiction
+    scope: site_facts
+    inputs:
+      - shipping.region
+    condition:
+      type: cross_page_contradiction
+      fact: shipping.region
+      sources: [homepage, shipping_policy]
+    # ADVISORY, not a Google-violation finding. Re-searched (see decisions.md,
+    # "Rate-limiting gaps..." and "shipping_region_contradiction downgraded"):
+    # no official Google page states that ship-to regions must be consistent
+    # across a merchant's OWN pages - the adjacent pages cover feed-vs-website
+    # cost/speed consistency or ship-FROM location, not this. Per the "no
+    # finding without a Google source" rule it ships as a quality_improvement
+    # advisory: excluded from snapshot status, no policy_reference, no Google
+    # claim in its wording (app.rules.loader enforces both).
+    #
+    # To promote back to a violation finding once a real official source is
+    # found: set impact to listing_disapproval/suspension_risk, severity to
+    # match, add a policy_reference quoting that page and its
+    # google_source_url, and reword title/description as a compliance risk.
+    impact: quality_improvement
+    severity: low
+    min_confidence: 0.75
+    title: "Your pages state different shipping regions"
+    google_source_url: null
+    description: >
+      The regions the store says it ships to differ between the homepage
+      (or footer/banner copy) and the dedicated shipping policy page. This
+      is not a Google Merchant Center policy violation - it is worth
+      reconciling so customers get one clear answer about where you ship.
+    remediation: >
+      For customer clarity, make the list of countries/regions you ship to
+      identical on the homepage/banner copy and the dedicated shipping
+      policy page - update whichever one is out of date.
+
+  - id: return_window_conflict
+    scope: site_facts
+    inputs:
+      - return.window_days
+    condition:
+      type: cross_page_contradiction
+      fact: return.window_days
+      sources: [returns_policy, faq, product, checkout]
+    impact: listing_disapproval
+    severity: high
+    min_confidence: 0.75
+    title: "Return window is stated inconsistently across pages"
+    policy_reference: "Shipping and returns policies must be accurate and consistent"
+    # Verified live - "Set up your return policies for Shopping ads and free
+    # listings" explicitly: "Confirm that the return policies are consistent
+    # in Merchant Center and across your website, for example, in the
+    # footer, returns page, and web banner."
+    google_source_url: "https://support.google.com/merchants/answer/10220642"
+    description: >
+      The stated return window (e.g. "30 days" vs "14 days") differs across
+      the returns policy page, FAQ, a product page, or checkout copy.
+    remediation: >
+      State the same return window (e.g. "30 days") on the returns policy
+      page, FAQ, product pages, and checkout - update whichever page(s) show
+      a different number.
+
+  - id: missing_contact_info
+    scope: site_facts
+    inputs:
+      - business.email
+      - business.phone
+    condition:
+      type: all_missing
+      fields: [business.email, business.phone]
+    impact: suspension_risk
+    severity: critical
+    min_confidence: 1.0
+    title: "No business contact information found"
+    policy_reference: "Business identity and contact information requirements"
+    # Verified live - "How to fix: Missing contact information on your
+    # online store" explicitly: "Show at least a business address, phone
+    # number, email, contact form" reachable "prior to checkout."
+    google_source_url: "https://support.google.com/merchants/answer/10248173"
+    description: >
+      No business email address and no business phone number could be found
+      anywhere on the site. Google requires merchants to provide a way for
+      customers to contact the business.
+    remediation: >
+      Add a visible business email address and/or phone number, ideally in
+      the site footer and on a dedicated Contact page.
+
+  - id: missing_returns_page
+    scope: site
+    inputs: []
+    condition:
+      type: missing_resource
+      resource_type: returns_policy
+    impact: suspension_risk
+    severity: critical
+    min_confidence: 1.0
+    title: "No returns/refund policy page found"
+    policy_reference: "Return and refund policy must be clearly stated"
+    # Verified live - same return-policy page as return_window_conflict:
+    # "Provide clear and conspicuous refund and return information on your
+    # website," accessible "without having to log in, sign up, or enter any
+    # personal information."
+    google_source_url: "https://support.google.com/merchants/answer/10220642"
+    description: >
+      The site has no reachable returns/refund policy page at all (not a
+      soft-404/catch-all page matching one - a genuinely absent page).
+    remediation: >
+      Publish a dedicated returns/refund policy page stating the return
+      window, refund method, and any costs the customer is responsible for.
+
+  - id: business_identity_conflict
+    scope: site_facts
+    inputs:
+      - business.name
+      - business.address
+      - business.phone
+      - business.email
+    condition:
+      type: existing_check
+      check: "app.checks.business_identity.check_business_identity_consistency"
+    impact: suspension_risk
+    severity: critical
+    min_confidence: 0.75
+    title: "Business identity is inconsistent across pages"
+    policy_reference: "Business identity and contact information requirements"
+    # Verified live - "Misrepresentation" policy, under "Unacceptable
+    # business practices": "Present a false identity, business name, or
+    # contact information" / "Hiding, omitting, or misrepresenting material
+    # details about your actual business location."
+    google_source_url: "https://support.google.com/merchants/answer/6150127"
+    description: >
+      Business name, address, phone, or email is inconsistent across the
+      footer, contact page, and policy pages (e.g. two different support
+      emails, or a phone country code that doesn't match the stated address
+      country). Delegates entirely to the existing
+      business_identity.check_business_identity_consistency check - not
+      reimplemented here.
+    remediation: >
+      Reconcile the business name, address, phone number, and email shown in
+      the footer, contact page, and policy pages so they all describe the
+      same entity and location. (In practice this rule's Finding uses the
+      delegated check's own, more specific recommended_fix - see
+      app.findings_builder.)

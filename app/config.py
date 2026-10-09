@@ -201,6 +201,84 @@ class Settings(BaseSettings):
     def _clamp_max_product_pages_per_category(cls, v: int) -> int:
         return max(1, min(v, HARD_MAX_PRODUCT_PAGES_PER_CATEGORY))
 
+    # Evidence storage (First Audit evidence-retention round): raw bodies/
+    # JSON-LD/screenshots live in object storage (Tier 2), never as large
+    # Postgres columns - see app/evidence_storage/ and app/evidence_retention.py.
+    evidence_backend: str = "local"  # "local" | "s3"
+    evidence_bucket: str = "./evidence"  # local: a directory; s3: a bucket name
+    evidence_s3_endpoint_url: str = ""  # "" = real AWS S3; set for R2/MinIO/etc.
+    evidence_s3_region: str = "auto"
+    evidence_s3_access_key_id: str = ""
+    evidence_s3_secret_access_key: str = ""
+    evidence_compression: str = "zstd"  # "zstd" | "gzip" | "none"
+    # Keep raw evidence blobs for the most recent N runs, OR the most recent
+    # N days - whichever is configured; either/both may be set. None = no
+    # pruning on that axis. Findings/evaluations/resource_facts/status history
+    # are never pruned by either setting - only the heavy raw blob and its
+    # Resource.*_blob_hash reference are cleared.
+    evidence_retention_runs: int | None = None
+    evidence_retention_days: int | None = 90
+    # Default false per spec: a passing resource keeps only its hash +
+    # extracted facts + rule result, never its raw body - the common case for
+    # a healthy store, so this is what keeps a repeatedly-re-audited compliant
+    # store cheap.
+    keep_body_on_pass: bool = False
+    screenshots_only_critical: bool = True
+    # Hard cap on LLMCacheEntry row count (Tier 3: the LLM cache must be
+    # bounded, never an unbounded structure that grows for the life of the
+    # process/database) - app.evidence_retention's prune job deletes the
+    # oldest rows beyond this count, in addition to LLMCache's existing
+    # max_age_days-based staleness check.
+    llm_cache_max_items: int = 50_000
+
+    @field_validator("evidence_compression")
+    @classmethod
+    def _validate_evidence_compression(cls, v: str) -> str:
+        if v not in ("zstd", "gzip", "none"):
+            raise ValueError('evidence_compression must be "zstd", "gzip", or "none"')
+        return v
+
+    @field_validator("evidence_backend")
+    @classmethod
+    def _validate_evidence_backend(cls, v: str) -> str:
+        if v not in ("local", "s3"):
+            raise ValueError('evidence_backend must be "local" or "s3"')
+        return v
+
+    # Single-admin access control (GMC bot spec section 6). Both blank by
+    # default - app.auth.seed.seed_admin refuses to seed a login nobody set a
+    # real password for, rather than quietly booting with a guessable
+    # default admin account.
+    admin_email: str = ""
+    admin_password: str = ""
+    session_cookie_name: str = "gmc_session"
+    session_ttl_hours: int = 24 * 14  # 14 days
+    # Brute-force guard on POST /api/auth/login - counts FAILED attempts only,
+    # in two independent sliding windows: per client IP (tight - stops a
+    # single source hammering) and per submitted email (looser - stops an
+    # attacker rotating IPs against the one admin account, while keeping the
+    # window short so it can't be used to lock the real admin out for long).
+    # Single-worker only - see first_audit_max_concurrent below.
+    login_rate_limit_ip_max_attempts: int = 5
+    login_rate_limit_ip_window_seconds: float = 60.0
+    login_rate_limit_account_max_attempts: int = 10
+    login_rate_limit_account_window_seconds: float = 900.0
+    # Global cap on in-flight First Audit runs in this process - each one is
+    # a full Playwright crawl + LLM fact extraction, and unbounded concurrent
+    # runs are what OOM'd the sandbox. Beyond the cap, new runs get a 429.
+    # SINGLE-WORKER ONLY: this cap, the duplicate-run lock and the login
+    # limiters above all live in process memory. Under `uvicorn --workers N`
+    # each worker gets its own copy - the cap silently becomes N x this value,
+    # the same URL can run in two workers, and login limits loosen N x.
+    # Move this state to Redis before running more than one worker.
+    first_audit_max_concurrent: int = 2
+    # Wall-clock ceiling for one whole First Audit run. A hung run (e.g.
+    # Playwright stuck on a page) never reaches the `finally` that frees its
+    # concurrency slot - this turns a hang into a timeout that does, and marks
+    # the run "error". Well above a normal crawl: worst case is ~150 pages x
+    # (20s nav + 5s settle) per-page Playwright timeouts plus LLM extraction.
+    first_audit_timeout_seconds: float = 1800.0
+
     @property
     def llm_configured(self) -> bool:
         if self.llm_provider == "openai":

@@ -6,6 +6,14 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { listStores, removeStore, rerunStoreAudit, MonitoredStore, ApiError } from "@/lib/api";
 import { fadeUp, staggerContainer, staggerItem } from "@/lib/motion";
+import AnimatedCounter from "@/components/AnimatedCounter";
+
+function handleSpotlight(e: React.MouseEvent<HTMLElement>) {
+  const el = e.currentTarget;
+  const rect = el.getBoundingClientRect();
+  el.style.setProperty("--spot-x", `${e.clientX - rect.left}px`);
+  el.style.setProperty("--spot-y", `${e.clientY - rect.top}px`);
+}
 
 export default function MonitorPage() {
   const router = useRouter();
@@ -71,13 +79,18 @@ export default function MonitorPage() {
 
   return (
     <div>
-      <motion.h1 initial="hidden" animate="show" variants={fadeUp} className="text-xl font-semibold mb-4">
-        Monitored stores
-      </motion.h1>
-      {error && <p className="text-sm text-red-600 mb-4">{error}</p>}
-      {!stores && !error && <p className="text-slate-600">Loading...</p>}
+      <motion.div initial="hidden" animate="show" variants={fadeUp} className="flex items-baseline justify-between mb-4 flex-wrap gap-2">
+        <h1 className="text-xl font-semibold">Monitored stores</h1>
+        {stores && stores.length > 0 && (
+          <span className="text-sm text-slate-500 dark:text-slate-400">
+            <AnimatedCounter value={stores.length} className="gradient-text font-semibold" /> tracked
+          </span>
+        )}
+      </motion.div>
+      {error && <p className="text-sm text-red-600 dark:text-red-400 mb-4">{error}</p>}
+      {!stores && !error && <p className="text-slate-500 dark:text-slate-400">Loading...</p>}
       {stores && stores.length === 0 && (
-        <motion.p initial="hidden" animate="show" variants={fadeUp} className="text-slate-600">
+        <motion.p initial="hidden" animate="show" variants={fadeUp} className="text-slate-500 dark:text-slate-400">
           No stores registered yet. Run an audit from the{" "}
           <Link href="/" className="underline gradient-text font-medium">
             home page
@@ -95,7 +108,8 @@ export default function MonitorPage() {
                 exit={{ opacity: 0, x: -12, transition: { duration: 0.2 } }}
                 whileHover={{ y: -2 }}
                 layout
-                className="glass-card rounded-xl p-4 flex flex-wrap items-center justify-between gap-3"
+                onMouseMove={handleSpotlight}
+                className="spotlight-card glass-card rounded-xl p-4 flex flex-wrap items-center justify-between gap-3"
               >
                 <div className="min-w-0">
                   <div className="font-medium truncate max-w-md">{s.url}</div>
@@ -116,7 +130,7 @@ export default function MonitorPage() {
                       View latest
                     </Link>
                   ) : (
-                    <span className="text-xs text-slate-400 px-1">not yet available</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400 px-1">not yet available</span>
                   )}
                   <motion.button
                     whileHover={{ scale: 1.03 }}
@@ -131,7 +145,7 @@ export default function MonitorPage() {
                   <button
                     onClick={() => handleRemove(s.id)}
                     disabled={removingId === s.id}
-                    className="text-sm text-red-600 hover:underline disabled:opacity-50"
+                    className="text-sm text-red-600 dark:text-red-400 hover:underline disabled:opacity-50"
                   >
                     {removingId === s.id ? "Removing..." : "Remove"}
                   </button>

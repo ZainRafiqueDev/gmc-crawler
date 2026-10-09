@@ -277,6 +277,40 @@ _CAPTCHA_WIDGET_SIGNATURES = (
 )
 _CAPTCHA_BLOCK_PHRASES = ("verify you are human", "complete the security check", "i'm not a robot")
 
+# Tier C: HARD, permanent block pages - distinct from Tier A/B above, which
+# are transient (a real browser visiting via Playwright can plausibly get
+# past a JS challenge once its script runs). A hard block (a WAF rule
+# decision, not a timed challenge) will never resolve by waiting, so this
+# must NEVER enter _wait_for_challenge_to_resolve's wait loop - caught and
+# raised immediately in PageFetcher.fetch, before that loop even starts.
+# Matched on body text regardless of HTTP status: confirmed live (ridge.com)
+# that Cloudflare's own hard-block page is commonly served as a plain 200,
+# not 403, so the existing status-code check alone cannot catch it.
+# "Unambiguous" phrases trigger on their own; "ambiguous" ones (a real page
+# could legitimately say "access denied" for an unrelated reason, e.g. a
+# gated account page) only count when the body is also short - same
+# thin-page discipline as the CAPTCHA-widget tier above.
+_HARD_BLOCK_PHRASES_UNAMBIGUOUS = (
+    "sorry, you have been blocked",  # Cloudflare's own block page title
+    "you are unable to access",  # Cloudflare's own block page wording
+    "this website is using a security service to protect itself from online attacks",
+    "the action you just performed triggered the security solution",
+    "incapsula incident id",  # Imperva/Incapsula
+    "your request has been blocked",  # generic WAF phrasing (Akamai and others)
+)
+_HARD_BLOCK_PHRASES_AMBIGUOUS = ("access denied", "reference #", "request unsuccessful")
+
+
+def _looks_like_hard_block(html: str | None) -> bool:
+    if not html:
+        return False
+    lowered = html.lower()
+    if any(p in lowered for p in _HARD_BLOCK_PHRASES_UNAMBIGUOUS):
+        return True
+    if any(p in lowered for p in _HARD_BLOCK_PHRASES_AMBIGUOUS) and _visible_text_length(html) < _MAX_INTERSTITIAL_BODY_CHARS:
+        return True
+    return False
+
 # A real full-page interstitial/CAPTCHA screen has almost no other content
 # besides the challenge widget and a sentence or two - this distinguishes
 # "the whole page is a block screen" from "this normal page happens to
@@ -587,6 +621,21 @@ class PageFetcher:
                 await _dismiss_cookie_consent(page)
 
                 html = await page.content()
+
+                # Checked BEFORE the transient-challenge tier, and never
+                # waited out - a hard block is a WAF rule decision, not a
+                # timed interstitial, so there is nothing to wait for.
+                # "Couldn't read it" must never be scored as "it isn't
+                # there": this raises immediately, the same way a confirmed
+                # 401/403 already does, so this page ends up CANNOT_VERIFY
+                # (failure_category="bot_blocked"), never handed downstream
+                # as if its block-page body were real content.
+                if _looks_like_hard_block(html):
+                    raise _RetryableFetchFailure(
+                        "A bot-protection hard block page (e.g. Cloudflare's \"Sorry, you have been blocked\") was "
+                        "returned - this tool never attempts to bypass it",
+                        category="bot_blocked",
+                    )
 
                 resolved_from_challenge = False
                 if _looks_like_challenge(html) or _looks_like_captcha(html):
