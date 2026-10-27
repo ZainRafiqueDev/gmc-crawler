@@ -261,6 +261,34 @@ settings: `login_rate_limit_{ip,account}_{max_attempts,window_seconds}`,
 `first_audit_max_concurrent` and `first_audit_timeout_seconds`. All of this state is per-process,
 so it is correct only with a single uvicorn worker (see Dockerfile).
 
+### Cycle: admin self-service password/email change, OTP-gated
+
+```
+app/auth/email.py::send_otp_email(to_email, code, purpose, settings)
+  - plain smtplib/STARTTLS, no new dependency; raises EmailNotConfiguredError if smtp_host/username/
+    password are blank (checked before any network call)
+
+app/auth/otp.py
+  create_otp_challenge(session, user_id, purpose, settings, new_email=None) -> code
+    - deletes any still-outstanding challenge for (user_id, purpose) first, then inserts a fresh
+      OtpChallenge row (code_hash via the same bcrypt helper as the password itself)
+  verify_otp_challenge(session, user_id, purpose, code) -> OtpChallenge | None
+    - wrong code -> attempts += 1, deletes the row outright past 5 attempts
+    - correct code -> marks consumed_at, returns the row (new_email, for the email_change purpose)
+
+app/api/auth.py, four new require_admin routes:
+  POST /api/auth/password/request-otp   {current_password}                 -> 204, emails code to admin.email
+  POST /api/auth/password/confirm       {current_password, otp, new_password} -> 200, deletes all Sessions for this user
+  POST /api/auth/email/request-otp      {current_password, new_email}      -> 204, emails code to admin.email (the OLD address)
+  POST /api/auth/email/confirm          {current_password, otp}            -> 200, deletes all Sessions for this user
+```
+
+Frontend: `frontend/lib/admin-api.ts` gained the four matching client functions;
+`frontend/app/settings/page.tsx` (new) is two `SpotlightCard`s, each a request-code -> confirm-code
+two-step form, reached by clicking the admin's own email in `SiteHeader`. A successful confirm
+`router.push("/login")`s immediately rather than waiting for the next `/me` check to notice the
+server-side session invalidation above.
+
 ### Cycle: whole-app admin gating + whole-app redesign (black+light-blue, GSAP, reactbits-style flourishes)
 
 **Backend**: every route in `app/api/main.py` except `/health` now takes `_admin: User =

@@ -473,6 +473,33 @@ class Session(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class OtpChallenge(Base):
+    """One-time code for a logged-in admin changing their own password or
+    email (app.auth.otp), a second factor on top of re-entering the current
+    password both flows also require (app/api/auth.py's password/email
+    request-otp + confirm routes). `code_hash` reuses the same bcrypt helper
+    as the password itself (app.auth.security) rather than a new hashing
+    scheme; the raw 6-digit code only ever exists in the outgoing email and
+    the request body, never stored. `new_email` is set only for
+    purpose="email_change" - kept here (not re-read from the confirm
+    request) so the address that actually gets applied is exactly the one
+    the OTP was emailed about, not whatever a second request happens to
+    pass. `attempts` bounds brute-forcing the 6-digit code independent of
+    its own TTL - see app.auth.otp.verify_otp_challenge.
+    """
+    __tablename__ = "otp_challenges"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    purpose: Mapped[str]  # "password_change" | "email_change"
+    code_hash: Mapped[str]
+    new_email: Mapped[str | None] = mapped_column(default=None)
+    attempts: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
 def _add_missing_columns(sync_conn) -> None:
     """`Base.metadata.create_all` only creates tables that don't exist yet -
     it never alters an existing table to add a newly-declared column (e.g.

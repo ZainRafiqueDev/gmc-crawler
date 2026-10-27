@@ -70,3 +70,65 @@ export async function getFirstAuditStatus(runId: number): Promise<FirstAuditStat
 export function firstAuditReportPdfUrl(runId: number): string {
   return `${API_BASE}/api/first-audit/${runId}/report.pdf`;
 }
+
+// Admin self-service password/email change (app/api/auth.py's password/*
+// and email/* routes) - current-password + OTP, the OTP emailed to the
+// REGISTERED/current address for both flows (even an email change: the
+// code goes to the OLD address being replaced, never the new one). A
+// successful confirm invalidates every session for this account server-
+// side (including the one making the request) - the caller's next me()
+// call 403s, same as any other session-ended case, which is what drives
+// the redirect back to /login.
+
+async function voidResponse(res: Response): Promise<void> {
+  if (!res.ok && res.status !== 204) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = body.detail || detail;
+    } catch {
+      // response body wasn't JSON - fall back to statusText
+    }
+    throw new ApiError(res.status, detail);
+  }
+}
+
+export async function requestPasswordChangeOtp(currentPassword: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/auth/password/request-otp`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword }),
+  });
+  return voidResponse(res);
+}
+
+export async function confirmPasswordChange(currentPassword: string, otp: string, newPassword: string): Promise<AdminUser> {
+  const res = await fetch(`${API_BASE}/api/auth/password/confirm`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword, otp, new_password: newPassword }),
+  });
+  return asJson(res);
+}
+
+export async function requestEmailChangeOtp(currentPassword: string, newEmail: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/auth/email/request-otp`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword, new_email: newEmail }),
+  });
+  return voidResponse(res);
+}
+
+export async function confirmEmailChange(currentPassword: string, otp: string): Promise<AdminUser> {
+  const res = await fetch(`${API_BASE}/api/auth/email/confirm`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword, otp }),
+  });
+  return asJson(res);
+}

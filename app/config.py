@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Hard ceilings applied regardless of what any caller (CLI flag, API request
@@ -245,6 +245,28 @@ class Settings(BaseSettings):
             raise ValueError('evidence_backend must be "local" or "s3"')
         return v
 
+    @field_validator("session_cookie_samesite")
+    @classmethod
+    def _validate_session_cookie_samesite(cls, v: str) -> str:
+        v = v.lower()
+        if v not in ("lax", "strict", "none"):
+            raise ValueError('session_cookie_samesite must be "lax", "strict", or "none"')
+        return v
+
+    @model_validator(mode="after")
+    def _validate_samesite_none_requires_secure(self) -> "Settings":
+        # Browsers silently drop a SameSite=None cookie that isn't also
+        # Secure - failing loudly at startup instead of shipping a cookie
+        # that looks set but is never actually stored is the whole point of
+        # this check (this exact combination is the cross-site deployment
+        # case session_cookie_samesite's own docstring describes).
+        if self.session_cookie_samesite == "none" and not self.session_cookie_secure:
+            raise ValueError(
+                "session_cookie_samesite='none' requires session_cookie_secure=true "
+                "(browsers reject SameSite=None cookies that aren't also Secure)"
+            )
+        return self
+
     # Single-admin access control (GMC bot spec section 6). Both blank by
     # default - app.auth.seed.seed_admin refuses to seed a login nobody set a
     # real password for, rather than quietly booting with a guessable
@@ -253,6 +275,21 @@ class Settings(BaseSettings):
     admin_password: str = ""
     session_cookie_name: str = "gmc_session"
     session_ttl_hours: int = 24 * 14  # 14 days
+    # Deployment-shape-dependent, not a fixed choice: local dev serves both
+    # frontend and backend from plain http://localhost (same-site, different
+    # port), where SameSite=Lax + no Secure works and is what lets the cookie
+    # be set/read at all over plain HTTP. A real deployment (Vercel frontend,
+    # a separate backend host - e.g. Render) puts them on different domains,
+    # which is cross-site: SameSite=Lax cookies are NOT sent on the
+    # fetch()/XHR calls this API client makes (only on top-level navigations),
+    # so login would silently stop persisting. Cross-site requires
+    # SameSite=None, and browsers reject SameSite=None without Secure - that
+    # pairing is enforced below, not just documented. Set via
+    # SESSION_COOKIE_SECURE=true / SESSION_COOKIE_SAMESITE=none in the
+    # backend's own env (never in the frontend/Vercel env - the frontend
+    # doesn't set this cookie, the backend does).
+    session_cookie_secure: bool = False
+    session_cookie_samesite: str = "lax"
     # Brute-force guard on POST /api/auth/login - counts FAILED attempts only,
     # in two independent sliding windows: per client IP (tight - stops a
     # single source hammering) and per submitted email (looser - stops an
@@ -263,6 +300,35 @@ class Settings(BaseSettings):
     login_rate_limit_ip_window_seconds: float = 60.0
     login_rate_limit_account_max_attempts: int = 10
     login_rate_limit_account_window_seconds: float = 900.0
+
+    # Admin self-service password/email change (app/auth/otp.py,
+    # app/auth/email.py, the /api/auth/password/* and /api/auth/email/*
+    # routes). SMTP, not a transactional-email API/SDK - this sends a
+    # handful of OTP emails a day at most, nowhere near the volume where a
+    # dedicated provider's deliverability/analytics would matter, and
+    # smtplib (stdlib) needs no new dependency. Blank host = OTP email
+    # sending disabled - those routes fail with a clear 500 rather than
+    # silently pretending to have sent something.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""  # blank = falls back to smtp_username
+    smtp_use_tls: bool = True
+    otp_ttl_minutes: int = 10
+    # Separate from the login limiters above: these gate an already-
+    # authenticated admin's own account-settings actions, not anonymous
+    # login attempts, so the shape matches "sending OTP emails" (tight - a
+    # real admin requests one, maybe retries once) vs. "guessing a 6-digit
+    # code" (slightly looser since a wrong digit is more likely than a wrong
+    # password, but still bounded - the code is also deleted outright after
+    # this many wrong guesses regardless of its own TTL, see
+    # app/auth/otp.py).
+    otp_request_rate_limit_max_attempts: int = 3
+    otp_request_rate_limit_window_seconds: float = 900.0
+    otp_verify_rate_limit_max_attempts: int = 5
+    otp_verify_rate_limit_window_seconds: float = 900.0
+
     # Global cap on in-flight First Audit runs in this process - each one is
     # a full Playwright crawl + LLM fact extraction, and unbounded concurrent
     # runs are what OOM'd the sandbox. Beyond the cap, new runs get a 429.

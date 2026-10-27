@@ -29,7 +29,9 @@ export default function SiteHeader() {
             <NavLink href="/first-audit">First Audit</NavLink>
             <span className="flex-1" />
             <ThemeToggle />
-            <span className="text-xs text-slate-500 dark:text-slate-400 hidden sm:inline">{admin.email}</span>
+            <Link href="/settings" className="text-xs text-slate-500 dark:text-slate-400 hidden sm:inline hover:text-foreground transition-colors">
+              {admin.email}
+            </Link>
             <button onClick={handleLogout} className="text-sm text-slate-500 dark:text-slate-400 hover:text-foreground transition-colors">
               Log out
             </button>

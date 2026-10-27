@@ -1194,6 +1194,94 @@ between rounds. Mirrored at the top of `README.md`.
   anti-FOUC script is present at the right place (immediately after `<body>` opens, before any visible
   content) - not just trusting that the library "should" work as documented.
 
+## Session cookie made deployment-shape-aware (user asked where admin credentials go on Vercel)
+
+- **Real deployment blocker caught before it shipped, not after**: `ADMIN_EMAIL`/`ADMIN_PASSWORD` only
+  ever needed to go on the backend's own host (seeds the one admin account there; the frontend's login
+  form just forwards whatever the visitor typed) - but a Vercel-hosted frontend talking to a separately-
+  hosted backend (Render, per the earlier council plan) puts them on different domains. The session
+  cookie was `SameSite=Lax`, which is *not* sent on the cross-site `fetch()` calls this project's own
+  API client makes (only on top-level navigations) - login would have appeared to succeed (the `Set-
+  Cookie` on the login response itself isn't blocked) but silently stopped persisting on every request
+  after that, in production only, not in local dev where frontend+backend share `localhost`.
+- **`session_cookie_secure`/`session_cookie_samesite` added to `Settings`**, defaulting to today's
+  dev-friendly values (`false`/`"lax"`) - zero behavior change for local dev, confirmed live (`Set-
+  Cookie` header inspected directly after restart: still `SameSite=lax`, no `Secure`). A cross-site
+  deployment sets `SESSION_COOKIE_SECURE=true` + `SESSION_COOKIE_SAMESITE=none` on the **backend's**
+  own env (never the frontend/Vercel env - it doesn't set this cookie).
+- **`SameSite=None` without `Secure` is rejected at config-construction time, not just documented** -
+  browsers silently drop that exact combination (a cookie that looks set but is never actually stored),
+  so a `model_validator` raises immediately rather than shipping a config that looks fine until someone
+  tries to log in from the deployed frontend. New `tests/test_session_cookie_config.py` (5 tests)
+  covers both the accept and reject paths, plus the default values and the samesite-value validator.
+  Both `set_cookie` (login) and `delete_cookie` (logout) in `app/api/auth.py` now read these two
+  settings instead of hardcoding `samesite="lax"` - logout needs matching attributes to reliably clear
+  the cookie the browser actually stored.
+- **`.env.example` gained a documented `ADMIN_EMAIL`/`ADMIN_PASSWORD` section** (it had none before,
+  despite these being real, already-used settings) and the new `SESSION_COOKIE_*` vars, with the
+  cross-site deployment case spelled out inline rather than left to be rediscovered.
+- Full suite 731 passed (726 + 5 new).
+
+## Live integration verification, full click-through (Chrome extension became available mid-session)
+
+- **Verified the whole-app gating, theme, and auth flow for real in a browser**, not just via curl -
+  the Chrome extension wasn't connected earlier in this session (hence the curl-only verification in
+  the rounds above); once it reconnected, did a real login -> home (real `stores monitored` count,
+  matching the backend) -> Monitored Stores (real data) -> First Audit -> logout click-through, console
+  checked clean at every step.
+- **One real automation bug found and resolved, not a product bug**: the first login attempt appeared
+  to fail (form showed empty after submit) - turned out to be `form_input` racing ahead of a stale
+  element ref across a page re-render in the test tooling itself, not the app. Confirmed via network
+  inspection (the login POST had actually returned 200) and a clean retry with fresh refs. Recorded
+  here so a future session doesn't mistake the same test-tooling timing issue for a real regression.
+
+## Admin self-service password/email change, OTP-gated (user-requested mid-session)
+
+- **Confirmed before building** (2 explicit questions): SMTP (not a transactional-email API/SDK) for
+  sending the OTP, and current-password + OTP required for both changes (not OTP alone) - defense in
+  depth, so a hijacked session alone still can't change credentials.
+- **No existing email-sending capability in this project at all before this round** - new `app/auth/
+  email.py` (plain `smtplib` over STARTTLS, stdlib only, no new dependency) and new `Settings.smtp_*`/
+  `otp_ttl_minutes` fields. Blank `SMTP_HOST` means the two OTP-sending routes fail with a clear 500
+  ("Email sending is not configured on this server") rather than silently pretending to have sent
+  anything - confirmed live (real browser, SMTP genuinely unconfigured in this dev environment).
+- **New `OtpChallenge` table** (`app/db.py`), auto-created by the existing `create_all` path (a brand
+  new table, not a new column on an existing one - doesn't touch `_add_missing_columns`'s migration
+  path at all). `code_hash` reuses the same bcrypt helper as the password itself rather than a new
+  hashing scheme. Requesting a new code invalidates any previous still-outstanding one for the same
+  (user, purpose) - only the most recently emailed code is ever valid. A separate `attempts` counter
+  deletes the challenge outright after 5 wrong guesses, independent of its own TTL - bounds guessing
+  the 6-digit space regardless of how long the code itself stays valid.
+- **Four new `require_admin`-gated routes** (`app/api/auth.py`): `password/request-otp`, `password/
+  confirm`, `email/request-otp`, `email/confirm`. The email-change OTP is emailed to the CURRENT/old
+  address, never the new one being requested - confirmed in both a unit test and the live browser
+  click-through (the fake-outbox test asserts `to_email == settings.admin_email`, not the new address).
+  A new email already in use by another `User` row is rejected before any email is even sent (the
+  `users.email` unique constraint would catch it anyway at commit time, but failing fast with a clear
+  400 here is friendlier than surfacing a raw integrity error).
+- **A successful change invalidates every session for that account, including the one making the
+  request** - a changed password/email should mean every existing cookie (a stolen one included) stops
+  working immediately, not just future logins. The frontend doesn't wait to discover this via a failed
+  `/me` check - it proactively redirects to `/login` right after a successful confirm.
+- **Own pair of rate limiters** (`otp_request_rate_limit_*`/`otp_verify_rate_limit_*`), separate from
+  login's, keyed by admin id rather than IP/email since every call here is already authenticated -
+  bounds "spam me OTP emails" and "guess the 6-digit code via the endpoint" independently of the
+  per-challenge `attempts` cap above.
+- **New `/settings` page** (two cards, password and email, each a two-step request-code -> confirm
+  flow), reusing `SpotlightCard`/`ScrollReveal`/the established form styling rather than inventing new
+  patterns. Reached via clicking the admin's own email in `SiteHeader` - no separate top-level nav
+  item, consistent with "account settings lives behind your own account," not cluttering the primary
+  audit-mode nav.
+- **Live-verified end to end in the real browser, including both failure paths**: requesting a password-
+  change code with the correct current password correctly reached the "Email sending is not configured
+  on this server" 500 (proving current-password verification, rate limiting, and the DB write all
+  succeeded - only the actual SMTP send is unconfigured in this dev environment); requesting an email
+  change with a deliberately wrong current password correctly showed "Current password is incorrect"
+  and sent no email. Console clean in both cases.
+- 17 new backend tests (8 direct `app.auth.otp` unit tests, 7 HTTP-level route tests via the existing
+  minimal-app pattern with a fake email outbox, 2 for `app.auth.email`'s not-configured guard) - full
+  suite 748 passed.
+
 ## Scope decisions (explicitly deferred, not silently dropped)
 
 - LLM-call-failure-reason specificity (needs an `LLMClient` protocol change with a concurrency-safety
