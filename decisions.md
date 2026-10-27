@@ -1282,6 +1282,36 @@ between rounds. Mirrored at the top of `README.md`.
   minimal-app pattern with a fake email outbox, 2 for `app.auth.email`'s not-configured guard) - full
   suite 748 passed.
 
+## Real OTP send tested against Resend, domain-verification detour, admin re-seeded
+
+- **A real send through Resend's SMTP relay failed twice before succeeding, neither time a code bug**:
+  first, Resend's sandbox restriction on an unverified/test `from` address only allows sending to the
+  Resend account owner's own email, not the admin's registered address (expected sandbox behavior,
+  not a bug); second, after the user verified a domain in Resend, the actual `.env` value had a typo
+  (`nuvrrvo.store` vs. the real, verified `nuvorro.store`) - caught by comparing the exact strings
+  character-by-character against the Resend dashboard screenshot the user pasted, not assumed. Fixed by
+  correcting the `SMTP_FROM_EMAIL` domain to match exactly; the next send returned `204` (accepted by
+  Resend). Kept to 3 real sends total against the user's own explicit 5-10 budget for the day.
+- **Admin re-seeded**: `ADMIN_EMAIL`/`ADMIN_PASSWORD` in `.env` changed to the user's real account.
+  Flagged before doing it (not silently assumed) that `seed_admin` only matches by email - changing the
+  env var alone would have left the OLD admin row (`gmmccrawlcomplier@gmail.com`) permanently valid
+  alongside the new one, two working admin logins instead of the single one the system is designed
+  around. User confirmed removing the old row; deleted it (plus its sessions) directly via a one-off
+  script against the real `gmc_monitor.db`, then live-verified both outcomes: new credentials log in,
+  old ones now 403.
+- **Real, reproducible login bug found via the user's own repro, not this session's test tooling**:
+  after a successful login, the app bounced straight back to `/login` instead of landing on `/`. Root
+  cause: `AuthProvider`'s session check (`lib/auth-context.tsx`) runs once on mount (`useEffect(..., [])`)
+  - since `AuthProvider` lives in the root layout and a client-side `router.push` never remounts it,
+  `state.admin` stayed stale (null, from before login) the moment the redirect effect re-ran on the new
+  pathname and bounced back. This exact symptom had been dismissed earlier in this session as a one-off
+  test-automation timing artifact (it sometimes "worked" by the mount-effect's fetch happening to
+  resolve favorably by coincidence) - the user's clean, repeatable reproduction is what surfaced it as a
+  real, deterministic bug, not a fluke. **Fixed**: `useAuth()` now also exposes a `setAdmin()` setter;
+  the login page calls it directly with the `AdminUser` the login call already returned, seeding the
+  shared state immediately rather than waiting on a fetch that will never re-run. Live-verified: one
+  login attempt now lands cleanly on `/` with the correct admin shown, no bounce.
+
 ## Scope decisions (explicitly deferred, not silently dropped)
 
 - LLM-call-failure-reason specificity (needs an `LLMClient` protocol change with a concurrency-safety

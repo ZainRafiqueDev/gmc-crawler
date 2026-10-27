@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { login } from "@/lib/admin-api";
 import { ApiError } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import { fadeUp } from "@/lib/motion";
 
 export default function LoginPage() {
   const router = useRouter();
+  const { setAdmin } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -19,9 +21,14 @@ export default function LoginPage() {
     setSubmitting(true);
     setError(null);
     try {
-      await login(email, password);
+      const user = await login(email, password);
+      // Seeds AuthProvider's state directly, rather than waiting on its
+      // one-time mount effect to notice - that effect never re-runs after
+      // this client-side navigation (see lib/auth-context.tsx), so without
+      // this the redirect effect would immediately bounce back to /login
+      // on stale (pre-login) state.
+      setAdmin(user);
       router.push("/");
-      router.refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not reach the auth service. Is the backend running?");
       setSubmitting(false);

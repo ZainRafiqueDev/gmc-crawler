@@ -15,9 +15,22 @@ type AuthState = {
   loading: boolean;
 };
 
-const AuthContext = createContext<AuthState>({ admin: null, loading: true });
+type AuthContextValue = AuthState & {
+  // Lets the login page seed the auth state directly with the AdminUser the
+  // login call already returned, instead of relying on the one-time mount
+  // effect below to notice. That effect runs ONCE, on AuthProvider's own
+  // mount (empty deps) - AuthProvider lives in the root layout and is never
+  // remounted by a client-side router.push, so without this, a successful
+  // login's state.admin stays stale (still null, from before login) right
+  // up until the redirect effect below fires on the new pathname and
+  // bounces straight back to /login. Confirmed live, not hypothetical -
+  // reproduced by a real user, not just this session's own test tooling.
+  setAdmin: (admin: AdminUser) => void;
+};
 
-export function useAuth(): AuthState {
+const AuthContext = createContext<AuthContextValue>({ admin: null, loading: true, setAdmin: () => {} });
+
+export function useAuth(): AuthContextValue {
   return useContext(AuthContext);
 }
 
@@ -49,7 +62,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [state, pathname, router]);
 
-  return <AuthContext.Provider value={state}>{children}</AuthContext.Provider>;
+  function setAdmin(admin: AdminUser) {
+    setState({ admin, loading: false });
+  }
+
+  return <AuthContext.Provider value={{ ...state, setAdmin }}>{children}</AuthContext.Provider>;
 }
 
 // Wraps every page's content: while the session check is in flight, or while
